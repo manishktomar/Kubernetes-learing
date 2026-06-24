@@ -1,0 +1,239 @@
+# ============================================================
+# Google GKE (Google Kubernetes Engine) - Learning Reference
+# ============================================================
+# GKE is Google Cloud's fully managed Kubernetes service.
+# Google invented Kubernetes, so GKE has the most cutting-edge
+# integration and is considered the gold standard managed K8s.
+#
+# Ways to create a GKE cluster:
+#   1. gcloud CLI  ← recommended for learning
+#   2. Google Cloud Console (GUI)
+#   3. Terraform / Pulumi
+#   4. Config Connector (k8s CRDs for GCP resources)
+#
+# Prerequisites
+#   - gcloud CLI installed and authenticated
+#   - kubectl installed (gcloud components install kubectl)
+#   - A GCP project with billing enabled
+# ============================================================
+
+
+# ============================================================
+# TOOL INSTALLATION
+# ============================================================
+# Install gcloud CLI (Linux):
+#   curl https://sdk.cloud.google.com | bash
+#   exec -l $SHELL
+#   gcloud init
+#
+# Authenticate:
+#   gcloud auth login
+#   gcloud auth application-default login
+#
+# Set project:
+#   gcloud config set project <PROJECT_ID>
+#   gcloud config set compute/zone us-central1-a
+#
+# Install kubectl via gcloud:
+#   gcloud components install kubectl
+#   gcloud components install gke-gcloud-auth-plugin   # required for k8s 1.26+
+# ============================================================
+
+
+# ============================================================
+# Quick cluster creation via gcloud CLI
+# ============================================================
+# Enable GKE API
+#   gcloud services enable container.googleapis.com
+#
+# Create Autopilot cluster (fully managed node pools)
+#   gcloud container clusters create-auto learning-cluster \
+#     --region us-central1 \
+#     --project <PROJECT_ID>
+#
+# Create Standard cluster (you manage node pools)
+#   gcloud container clusters create learning-cluster \
+#     --zone us-central1-a \
+#     --num-nodes 3 \
+#     --machine-type e2-standard-2 \
+#     --enable-autoscaling --min-nodes 1 --max-nodes 6 \
+#     --cluster-version 1.29
+#
+# Get credentials
+#   gcloud container clusters get-credentials learning-cluster \
+#     --zone us-central1-a --project <PROJECT_ID>
+#
+# Verify
+#   kubectl get nodes
+# ============================================================
+
+
+# ============================================================
+# GKE Cluster YAML-style reference
+# (mirrors Google Cloud REST API / Config Connector CRD schema)
+# ============================================================
+apiVersion: container.cnrm.cloud.google.com/v1beta1  # Config Connector CRD
+kind: ContainerCluster
+metadata:
+  name: learning-cluster
+  namespace: config-connector      # Config Connector operator namespace
+  annotations:
+    cnrm.cloud.google.com/project-id: "<PROJECT_ID>"
+spec:
+  location: us-central1           # region (regional) or zone (zonal)
+  description: "GKE learning cluster"
+  initialNodeCount: 1             # per zone for zonal, per zone in regional
+  minMasterVersion: "1.29"
+
+  # Release channel: RAPID, REGULAR, STABLE, or UNSPECIFIED
+  releaseChannel:
+    channel: REGULAR
+
+  # Network
+  network: "projects/<PROJECT_ID>/global/networks/default"
+  subnetwork: "projects/<PROJECT_ID>/regions/us-central1/subnetworks/default"
+
+  networking:
+    enableL4IlbSubsetting: false
+
+  # VPC-native (alias IP) – recommended
+  ipAllocationPolicy:
+    useIpAliases: true
+    clusterIpv4CidrBlock: "10.100.0.0/16"
+    servicesIpv4CidrBlock: "10.200.0.0/20"
+
+  # Default node pool
+  nodeConfig:
+    machineType: e2-standard-2
+    diskSizeGb: 100
+    diskType: pd-standard
+    imageType: COS_CONTAINERD
+    oauthScopes:
+      - https://www.googleapis.com/auth/cloud-platform
+    labels:
+      role: general
+    tags:
+      - k8s-node
+    workloadMetadataConfig:
+      mode: GKE_METADATA          # enables Workload Identity on nodes
+
+  # Autoscaling
+  autoscaling:
+    enableNodeAutoprovisioning: false
+
+  # Addons
+  addonsConfig:
+    httpLoadBalancing:
+      disabled: false             # enables GCP Ingress / NEG
+    horizontalPodAutoscaling:
+      disabled: false
+    networkPolicyConfig:
+      disabled: false
+    gcePersistentDiskCsiDriverConfig:
+      enabled: true               # enables GCE PD CSI driver
+    gcsFuseCsiDriverConfig:
+      enabled: true               # enables GCS FUSE for Cloud Storage
+
+  # Workload Identity – maps k8s SA to GCP SA
+  workloadIdentityConfig:
+    workloadPool: "<PROJECT_ID>.svc.id.goog"
+
+  # Maintenance window
+  maintenancePolicy:
+    recurringWindow:
+      window:
+        startTime: "2025-01-01T09:00:00Z"
+        endTime: "2025-01-01T17:00:00Z"
+        recurrence: "FREQ=WEEKLY;BYDAY=SA"
+
+  # Private cluster (nodes have no public IPs)
+  privateClusterConfig:
+    enablePrivateNodes: false       # set true for production
+    enablePrivateEndpoint: false
+    masterIpv4CidrBlock: "172.16.0.0/28"
+
+  # Logging and monitoring
+  loggingConfig:
+    enableComponents:
+      - SYSTEM_COMPONENTS
+      - WORKLOADS
+  monitoringConfig:
+    enableComponents:
+      - SYSTEM_COMPONENTS
+      - APISERVER
+      - SCHEDULER
+      - CONTROLLER_MANAGER
+    managedPrometheus:
+      enabled: true               # enable Google Managed Prometheus
+
+
+# ============================================================
+# Config Connector NodePool resource
+# ============================================================
+apiVersion: container.cnrm.cloud.google.com/v1beta1
+kind: ContainerNodePool
+metadata:
+  name: learning-cluster-nodepool
+  namespace: config-connector
+  annotations:
+    cnrm.cloud.google.com/project-id: "<PROJECT_ID>"
+spec:
+  clusterRef:
+    name: learning-cluster
+  location: us-central1
+  nodeCount: 3
+  autoscaling:
+    minNodeCount: 1
+    maxNodeCount: 10
+  management:
+    autoRepair: true
+    autoUpgrade: true
+  nodeConfig:
+    machineType: e2-standard-4
+    diskSizeGb: 100
+    diskType: pd-ssd
+    imageType: COS_CONTAINERD
+    oauthScopes:
+      - https://www.googleapis.com/auth/cloud-platform
+    labels:
+      role: app
+    workloadMetadataConfig:
+      mode: GKE_METADATA
+
+
+# ============================================================
+# COMMON GKE COMMANDS
+# ============================================================
+# List clusters
+#   gcloud container clusters list
+#
+# Resize node pool
+#   gcloud container clusters resize learning-cluster \
+#     --node-pool default-pool \
+#     --num-nodes 5 \
+#     --zone us-central1-a
+#
+# Upgrade cluster
+#   gcloud container clusters upgrade learning-cluster \
+#     --master --cluster-version 1.30\
+#     --zone us-central1-a
+#
+# Upgrade nodes
+#   gcloud container clusters upgrade learning-cluster \
+#     --node-pool default-pool \
+#     --zone us-central1-a
+#
+# Enable Workload Identity on existing cluster
+#   gcloud container clusters update learning-cluster \
+#     --workload-pool=<PROJECT_ID>.svc.id.goog \
+#     --zone us-central1-a
+#
+# Bind a k8s ServiceAccount to a GCP ServiceAccount (Workload Identity)
+#   gcloud iam service-accounts add-iam-policy-binding \
+#     gcp-sa@<PROJECT_ID>.iam.gserviceaccount.com \
+#     --role roles/iam.workloadIdentityUser \
+#     --member "serviceAccount:<PROJECT_ID>.svc.id.goog[default/k8s-sa]"
+#
+# Delete cluster
+#   gcloud container clusters delete learning-cluster \
+#     --zone us-central1-a --quiet

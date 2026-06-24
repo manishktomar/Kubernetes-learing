@@ -1,0 +1,473 @@
+# ============================================================
+# Kubernetes Others - Learning Reference
+# ============================================================
+# This file covers miscellaneous but important Kubernetes
+# primitives that don't belong to a single workload type:
+#
+#   1. Pod (naked)                 – lowest-level workload unit
+#   2. ReplicaSet                  – maintains N pod replicas
+#   3. SecurityContext             – pod/container-level security
+#   4. Node Affinity               – schedule to specific nodes
+#   5. Pod Affinity / Anti-Affinity– co-locate or spread pods
+#   6. Taints & Tolerations        – repel or attract pods to nodes
+#   7. PodDisruptionBudget (PDB)   – limit voluntary disruptions
+#   8. HorizontalPodAutoscaler     – auto-scale on CPU/memory/custom
+#   9. VerticalPodAutoscaler       – right-size container resource reqs
+#  10. PriorityClass               – pod scheduling priority
+# ============================================================
+
+
+# ============================================================
+# 1. Naked Pod
+# ============================================================
+# Use Pods directly only for testing / debugging.
+# For production, always use Deployments or StatefulSets.
+# Naked Pods are NOT rescheduled if a node fails.
+# ============================================================
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nginx-pod
+  namespace: default
+  labels:
+    app: nginx
+    tier: frontend
+spec:
+  containers:
+    - name: nginx
+      image: nginx:1.25.3
+      ports:
+        - containerPort: 80
+      resources:
+        requests:
+          cpu: "100m"
+          memory: "128Mi"
+        limits:
+          cpu: "250m"
+          memory: "256Mi"
+  restartPolicy: Always
+
+---
+# ============================================================
+# 2. ReplicaSet
+# ============================================================
+# Ensures N identical pod replicas are running at any time.
+# Prefer Deployments (which wrap ReplicaSets) for production.
+# ============================================================
+apiVersion: apps/v1
+kind: ReplicaSet
+metadata:
+  name: nginx-rs
+  namespace: default
+  labels:
+    app: nginx-rs
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: nginx-rs
+  template:
+    metadata:
+      labels:
+        app: nginx-rs
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:1.25.3
+          ports:
+            - containerPort: 80
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "250m"
+              memory: "256Mi"
+
+---
+# ============================================================
+# 3. SecurityContext
+# ============================================================
+# Controls security settings at the Pod and Container level.
+# Best practice: run as non-root, drop all capabilities,
+# enable seccomp and read-only root filesystem.
+# ============================================================
+apiVersion: v1
+kind: Pod
+metadata:
+  name: secure-pod
+  namespace: default
+spec:
+  # Pod-wide security context (applies to ALL containers)
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000          # UID to run the main process
+    runAsGroup: 3000         # GID for the main process
+    fsGroup: 2000            # GID for volume mounts (file ownership)
+    seccompProfile:
+      type: RuntimeDefault   # use the node's default seccomp profile
+
+  containers:
+    - name: secure-app
+      image: busybox:1.36
+      command: ["sh", "-c", "id && sleep 3600"]
+      # Container-level security context (overrides pod-level where applicable)
+      securityContext:
+        allowPrivilegeEscalation: false   # cannot gain more privileges than parent
+        readOnlyRootFilesystem: true      # root FS is read-only
+        runAsNonRoot: true
+        runAsUser: 1000
+        capabilities:
+          drop:
+            - ALL                         # drop ALL Linux capabilities
+          add:
+            - NET_BIND_SERVICE            # re-add only what you need
+      volumeMounts:
+        - name: tmp
+          mountPath: /tmp                 # writable tmp dir (since root FS is RO)
+      resources:
+        requests:
+          cpu: "100m"
+          memory: "64Mi"
+        limits:
+          cpu: "200m"
+          memory: "128Mi"
+
+  volumes:
+    - name: tmp
+      emptyDir: {}
+
+---
+# ============================================================
+# 4. Node Affinity
+# ============================================================
+# requiredDuringScheduling... – hard rule; pod won't schedule if not met
+# preferredDuringScheduling.. – soft rule; scheduler prefers but ignores if not met
+# ============================================================
+apiVersion: v1
+kind: Pod
+metadata:
+  name: node-affinity-demo
+  namespace: default
+spec:
+  affinity:
+    nodeAffinity:
+      # HARD: must run on a node in these zones
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: topology.kubernetes.io/zone
+                operator: In
+                values:
+                  - antarctica-east1
+                  - antarctica-west1
+      # SOFT: prefer nodes with SSD storage
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 80                # higher weight = stronger preference
+          preference:
+            matchExpressions:
+              - key: disktype
+                operator: In
+                values:
+                  - ssd
+        - weight: 20
+          preference:
+            matchExpressions:
+              - key: disktype
+                operator: In
+                values:
+                  - hdd
+
+  containers:
+    - name: app
+      image: busybox:1.36
+      command: ["sleep", "3600"]
+      resources:
+        requests:
+          cpu: "100m"
+          memory: "64Mi"
+        limits:
+          cpu: "200m"
+          memory: "128Mi"
+
+---
+# ============================================================
+# 5. Pod Affinity & Pod Anti-Affinity
+# ============================================================
+# podAffinity:     co-locate this pod with matching pods
+# podAntiAffinity: spread this pod away from matching pods
+# ============================================================
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pod-affinity-demo
+  namespace: default
+  labels:
+    app: cache
+spec:
+  affinity:
+    # SOFT: prefer to schedule on same node as web-server pods
+    podAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            labelSelector:
+              matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                    - web-server
+            topologyKey: kubernetes.io/hostname
+
+    # HARD: do NOT schedule on same node as another cache pod
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        - labelSelector:
+            matchExpressions:
+              - key: app
+                operator: In
+                values:
+                  - cache
+          topologyKey: kubernetes.io/hostname  # one pod per node
+
+  containers:
+    - name: redis
+      image: redis:7.2.4-alpine
+      resources:
+        requests:
+          cpu: "100m"
+          memory: "128Mi"
+        limits:
+          cpu: "250m"
+          memory: "256Mi"
+
+---
+# ============================================================
+# 6. Taints & Tolerations
+# ============================================================
+# Taints are applied to NODES to repel pods.
+# Tolerations are applied to PODS to allow scheduling on tainted nodes.
+#
+# Add a taint to a node:
+#   kubectl taint nodes node1 key=value:NoSchedule
+#   kubectl taint nodes node1 key=value:NoExecute
+#   kubectl taint nodes node1 key=value:PreferNoSchedule
+#
+# Remove a taint:
+#   kubectl taint nodes node1 key=value:NoSchedule-
+# ============================================================
+apiVersion: v1
+kind: Pod
+metadata:
+  name: toleration-demo
+  namespace: default
+spec:
+  tolerations:
+    # Tolerate a specific taint key=value:NoSchedule
+    - key: "dedicated"
+      operator: "Equal"
+      value: "gpu"
+      effect: "NoSchedule"
+
+    # Tolerate any taint with key=spot-instance (any value)
+    - key: "spot-instance"
+      operator: "Exists"
+      effect: "NoSchedule"
+
+    # Tolerate NoExecute (allows pod to run on tainted node
+    # and also survive if the taint is added after scheduling)
+    - key: "maintenance"
+      operator: "Equal"
+      value: "true"
+      effect: "NoExecute"
+      tolerationSeconds: 300     # evict after 300s if taint added
+
+  containers:
+    - name: gpu-workload
+      image: busybox:1.36
+      command: ["sleep", "3600"]
+      resources:
+        requests:
+          cpu: "250m"
+          memory: "256Mi"
+        limits:
+          cpu: "500m"
+          memory: "512Mi"
+
+---
+# ============================================================
+# 7. PodDisruptionBudget (PDB)
+# ============================================================
+# Limits how many pods of a workload can be simultaneously
+# unavailable during voluntary disruptions (node drain, rolling updates).
+#
+# Use minAvailable OR maxUnavailable (not both).
+# ============================================================
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: nginx-pdb
+  namespace: default
+spec:
+  minAvailable: 2              # at least 2 pods must remain available
+  # maxUnavailable: 1          # alternatively: at most 1 pod can be down
+  selector:
+    matchLabels:
+      app: nginx
+
+---
+# PDB with percentage
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: backend-pdb
+  namespace: production
+spec:
+  minAvailable: "80%"          # at least 80% of replicas must be up
+  selector:
+    matchLabels:
+      app: backend
+
+---
+# ============================================================
+# 8. HorizontalPodAutoscaler (HPA)
+# ============================================================
+# Automatically scales the number of pod replicas based on
+# observed CPU/memory utilisation or custom metrics.
+#
+# Prerequisites: metrics-server must be installed.
+#   kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+# ============================================================
+
+# Scale based on CPU (classic v1)
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: nginx-hpa
+  namespace: default
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: nginx-basic                # target Deployment name
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    # Scale out when average CPU > 60% of requested CPU
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 60
+
+    # Also scale on memory utilization
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 70
+
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 60    # wait 60s before scaling up again
+      policies:
+        - type: Pods
+          value: 2
+          periodSeconds: 60             # add max 2 pods every 60s
+    scaleDown:
+      stabilizationWindowSeconds: 300   # wait 5 min before scaling down
+      policies:
+        - type: Percent
+          value: 10
+          periodSeconds: 60             # remove max 10% of pods every 60s
+
+---
+# ============================================================
+# 9. PriorityClass
+# ============================================================
+# Defines scheduling priority levels for pods.
+# Higher-priority pods preempt (evict) lower-priority pods
+# when the cluster is resource-constrained.
+#
+# Built-in system priority classes:
+#   system-cluster-critical  (value: 2000000000)
+#   system-node-critical     (value: 2000001000)
+# ============================================================
+
+# High priority for production workloads
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: high-priority
+value: 1000000              # higher number = higher priority
+globalDefault: false
+description: "High priority for production critical workloads"
+
+---
+# Low priority for batch / background jobs
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: low-priority
+value: 100
+globalDefault: false
+description: "Low priority for background batch workloads"
+
+---
+# Pod using a PriorityClass
+apiVersion: v1
+kind: Pod
+metadata:
+  name: critical-pod
+  namespace: default
+spec:
+  priorityClassName: high-priority   # reference the PriorityClass
+  containers:
+    - name: critical-app
+      image: busybox:1.36
+      command: ["sleep", "3600"]
+      resources:
+        requests:
+          cpu: "500m"
+          memory: "512Mi"
+        limits:
+          cpu: "1"
+          memory: "1Gi"
+
+---
+# ============================================================
+# Quick Reference – kubectl commands
+# ============================================================
+# Pods:
+#   kubectl run nginx --image=nginx:1.25.3 --restart=Never
+#   kubectl get pods -o wide
+#   kubectl exec -it nginx-pod -- bash
+#   kubectl port-forward pod/nginx-pod 8080:80
+#   kubectl delete pod nginx-pod
+#
+# ReplicaSet:
+#   kubectl get rs
+#   kubectl scale rs nginx-rs --replicas=5
+#
+# SecurityContext (check effective UID):
+#   kubectl exec secure-pod -- id
+#
+# HPA:
+#   kubectl get hpa
+#   kubectl describe hpa nginx-hpa
+#   kubectl top pods                  # requires metrics-server
+#
+# PDB:
+#   kubectl get pdb
+#   kubectl describe pdb nginx-pdb
+#
+# PriorityClass:
+#   kubectl get priorityclass
+#
+# Node taints:
+#   kubectl taint nodes node1 dedicated=gpu:NoSchedule
+#   kubectl taint nodes node1 dedicated=gpu:NoSchedule-   # remove
+#   kubectl describe node node1 | grep -A5 Taints
+

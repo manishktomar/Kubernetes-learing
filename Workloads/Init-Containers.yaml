@@ -1,0 +1,351 @@
+# ============================================================
+# Kubernetes Init Containers - Learning Reference
+# ============================================================
+# Init containers run BEFORE app containers in a Pod.
+# They run to completion sequentially (in order), and the
+# app containers only start after ALL init containers succeed.
+#
+# Key properties:
+#   - Run once and exit (not restarted unless the Pod restarts)
+#   - If an init container fails, the Pod restarts (subject to restartPolicy)
+#   - They can have different images / tools than the main container
+#   - They share the same volumes, network, and IPC namespace as app containers
+#
+# Common use-cases:
+#   1. Wait for a dependency (DB, API) to be ready
+#   2. Clone / download configs or secrets before app starts
+#   3. Set file permissions / ownership on a shared volume
+#   4. Run database migrations before the app pod starts
+#   5. Register the pod in a service registry
+# ============================================================
+
+
+# ------------------------------------------------------------
+# 1. Wait for a service to be ready before starting the app
+#    Uses `nslookup` to block until the DB service resolves.
+# ------------------------------------------------------------
+apiVersion: v1
+kind: Pod
+metadata:
+  name: wait-for-db
+  namespace: default
+  labels:
+    app: wait-for-db
+spec:
+  initContainers:
+    # Init container 1: wait until mysql-svc DNS resolves
+    - name: wait-for-mysql
+      image: busybox:1.36
+      command:
+        - sh
+        - -c
+        - |
+          echo "Waiting for MySQL service..."
+          until nslookup mysql-svc; do
+            echo "MySQL not ready yet, retrying in 2s..."
+            sleep 2
+          done
+          echo "MySQL is up!"
+      resources:
+        requests:
+          cpu: "50m"
+          memory: "32Mi"
+        limits:
+          cpu: "100m"
+          memory: "64Mi"
+
+    # Init container 2: wait until redis-svc DNS resolves
+    - name: wait-for-redis
+      image: busybox:1.36
+      command:
+        - sh
+        - -c
+        - |
+          echo "Waiting for Redis service..."
+          until nslookup redis-svc; do
+            echo "Redis not ready, retrying in 2s..."
+            sleep 2
+          done
+          echo "Redis is up!"
+      resources:
+        requests:
+          cpu: "50m"
+          memory: "32Mi"
+        limits:
+          cpu: "100m"
+          memory: "64Mi"
+
+  containers:
+    - name: my-app
+      image: my-app:1.0.0
+      ports:
+        - containerPort: 8080
+      resources:
+        requests:
+          cpu: "200m"
+          memory: "256Mi"
+        limits:
+          cpu: "500m"
+          memory: "512Mi"
+
+  restartPolicy: Always
+
+---
+# ------------------------------------------------------------
+# 2. Copy configuration from a Git repo into a shared volume
+# ------------------------------------------------------------
+apiVersion: v1
+kind: Pod
+metadata:
+  name: git-config-loader
+  namespace: default
+  labels:
+    app: git-config-loader
+spec:
+  initContainers:
+    - name: git-clone
+      image: alpine/git:2.43.0
+      command:
+        - git
+        - clone
+        - "--depth=1"
+        - "https://github.com/example/app-config.git"
+        - /config
+      volumeMounts:
+        - name: config-dir
+          mountPath: /config
+      resources:
+        requests:
+          cpu: "100m"
+          memory: "128Mi"
+        limits:
+          cpu: "200m"
+          memory: "256Mi"
+
+  containers:
+    - name: nginx
+      image: nginx:1.25.3
+      volumeMounts:
+        - name: config-dir
+          mountPath: /etc/nginx/conf.d
+          readOnly: true
+      ports:
+        - containerPort: 80
+      resources:
+        requests:
+          cpu: "100m"
+          memory: "128Mi"
+        limits:
+          cpu: "250m"
+          memory: "256Mi"
+
+  volumes:
+    - name: config-dir
+      emptyDir: {}               # shared ephemeral volume
+
+---
+# ------------------------------------------------------------
+# 3. Fix permissions on a persistent volume before app starts
+#    Common for apps like Elasticsearch that need specific
+#    ownership on their data directory.
+# ------------------------------------------------------------
+apiVersion: v1
+kind: Pod
+metadata:
+  name: fix-permissions
+  namespace: default
+  labels:
+    app: elasticsearch
+spec:
+  initContainers:
+    - name: fix-perms
+      image: busybox:1.36
+      # Set vm.max_map_count (required by Elasticsearch)
+      command:
+        - sh
+        - -c
+        - |
+          chown -R 1000:1000 /usr/share/elasticsearch/data
+          chmod 0755 /usr/share/elasticsearch/data
+          sysctl -w vm.max_map_count=262144 || true
+      securityContext:
+        privileged: true           # needed for sysctl
+      volumeMounts:
+        - name: es-data
+          mountPath: /usr/share/elasticsearch/data
+      resources:
+        requests:
+          cpu: "50m"
+          memory: "32Mi"
+        limits:
+          cpu: "100m"
+          memory: "64Mi"
+
+  containers:
+    - name: elasticsearch
+      image: docker.elastic.co/elasticsearch/elasticsearch:8.12.2
+      env:
+        - name: discovery.type
+          value: single-node
+        - name: ES_JAVA_OPTS
+          value: "-Xms512m -Xmx512m"
+      ports:
+        - containerPort: 9200
+        - containerPort: 9300
+      volumeMounts:
+        - name: es-data
+          mountPath: /usr/share/elasticsearch/data
+      securityContext:
+        runAsUser: 1000
+        runAsNonRoot: true
+      resources:
+        requests:
+          cpu: "500m"
+          memory: "1Gi"
+        limits:
+          cpu: "1"
+          memory: "2Gi"
+
+  volumes:
+    - name: es-data
+      persistentVolumeClaim:
+        claimName: es-data-pvc
+
+---
+# ------------------------------------------------------------
+# 4. Run DB migrations as an init container before the app starts
+#    Ensures the schema is ready before the first API request.
+# ------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-with-migration
+  namespace: default
+  labels:
+    app: api
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: api
+  template:
+    metadata:
+      labels:
+        app: api
+    spec:
+      initContainers:
+        - name: run-migrations
+          image: my-api:1.0.0          # same image as the app (contains migration scripts)
+          command: ["python", "manage.py", "migrate"]
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: database-url
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "250m"
+              memory: "512Mi"
+
+      containers:
+        - name: api
+          image: my-api:1.0.0
+          command: ["gunicorn", "app.wsgi:application", "--bind", "0.0.0.0:8000"]
+          ports:
+            - containerPort: 8000
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: api-secrets
+                  key: database-url
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "500m"
+              memory: "1Gi"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+
+---
+# ------------------------------------------------------------
+# 5. Download a binary tool into a shared emptyDir volume
+#    so the main container can use it without bundling it
+#    in its own image.
+# ------------------------------------------------------------
+apiVersion: v1
+kind: Pod
+metadata:
+  name: tool-injector
+  namespace: default
+  labels:
+    app: tool-injector
+spec:
+  initContainers:
+    - name: download-kubectl
+      image: curlimages/curl:8.6.0
+      command:
+        - sh
+        - -c
+        - |
+          curl -sSL "https://dl.k8s.io/release/v1.29.0/bin/linux/amd64/kubectl" \
+            -o /tools/kubectl
+          chmod +x /tools/kubectl
+          echo "kubectl downloaded successfully"
+      volumeMounts:
+        - name: tools
+          mountPath: /tools
+      resources:
+        requests:
+          cpu: "50m"
+          memory: "32Mi"
+        limits:
+          cpu: "100m"
+          memory: "64Mi"
+
+  containers:
+    - name: app
+      image: busybox:1.36
+      command: ["sh", "-c", "/tools/kubectl version --client && sleep 3600"]
+      volumeMounts:
+        - name: tools
+          mountPath: /tools
+      resources:
+        requests:
+          cpu: "100m"
+          memory: "128Mi"
+        limits:
+          cpu: "200m"
+          memory: "256Mi"
+
+  volumes:
+    - name: tools
+      emptyDir: {}
+
+---
+# ------------------------------------------------------------
+# Useful kubectl commands for Init Containers
+# ------------------------------------------------------------
+# kubectl apply -f Init-Containers.yaml
+# kubectl get pods
+# kubectl describe pod wait-for-db
+#
+# Watch init container logs:
+#   kubectl logs wait-for-db -c wait-for-mysql
+#   kubectl logs wait-for-db -c wait-for-redis
+#
+# Follow main container logs after init completes:
+#   kubectl logs wait-for-db -c my-app -f
+#
+# Check init container status:
+#   kubectl get pod wait-for-db -o jsonpath='{.status.initContainerStatuses}'

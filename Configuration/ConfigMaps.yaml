@@ -1,0 +1,273 @@
+# ============================================================
+# Kubernetes ConfigMaps - Learning Reference
+# ============================================================
+# A ConfigMap stores non-sensitive configuration data as
+# key-value pairs, files, or entire configuration files.
+# It decouples configuration from the container image, so the
+# same image can be used across environments (dev/staging/prod).
+#
+# Ways to consume a ConfigMap in a Pod:
+#   1. Environment variable (single key)
+#   2. envFrom (all keys as env vars)
+#   3. Volume mount (keys become files)
+#   4. Command-line arguments
+#
+# Limits:
+#   - Max size: 1 MiB
+#   - Not suitable for sensitive data → use Secrets instead
+# ============================================================
+
+
+# ------------------------------------------------------------
+# 1. Basic ConfigMap – simple key-value pairs
+# ------------------------------------------------------------
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: default
+  labels:
+    app: my-app
+data:
+  # Simple key-value pairs
+  APP_ENV: "production"
+  APP_PORT: "8080"
+  LOG_LEVEL: "info"
+  MAX_CONNECTIONS: "100"
+  FEATURE_FLAG_DARK_MODE: "true"
+
+---
+# ------------------------------------------------------------
+# 2. ConfigMap with multi-line values (file-like entries)
+#    Use | for literal block (preserves newlines)
+#    Use > for folded block (newlines become spaces)
+# ------------------------------------------------------------
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-config
+  namespace: default
+data:
+  # Key = filename, value = file content
+  nginx.conf: |
+    user  nginx;
+    worker_processes  auto;
+    error_log  /var/log/nginx/error.log warn;
+    pid        /var/run/nginx.pid;
+
+    events {
+        worker_connections 1024;
+    }
+
+    http {
+        include       /etc/nginx/mime.types;
+        default_type  application/octet-stream;
+        sendfile      on;
+        keepalive_timeout 65;
+
+        server {
+            listen 80;
+            server_name _;
+
+            location / {
+                root   /usr/share/nginx/html;
+                index  index.html index.htm;
+            }
+
+            location /health {
+                return 200 'OK';
+                add_header Content-Type text/plain;
+            }
+        }
+    }
+
+  # Another config file stored in the same ConfigMap
+  default.conf: |
+    server {
+        listen       8080;
+        server_name  localhost;
+        location / {
+            proxy_pass http://backend:3000;
+        }
+    }
+
+---
+# ------------------------------------------------------------
+# 3. ConfigMap for application properties file
+# ------------------------------------------------------------
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-properties
+  namespace: default
+data:
+  application.properties: |
+    server.port=8080
+    spring.datasource.url=jdbc:postgresql://postgres:5432/appdb
+    spring.datasource.driver-class-name=org.postgresql.Driver
+    spring.jpa.hibernate.ddl-auto=validate
+    logging.level.root=INFO
+    logging.level.com.example=DEBUG
+
+  application-staging.properties: |
+    server.port=8080
+    spring.datasource.url=jdbc:postgresql://postgres-staging:5432/appdb
+    logging.level.root=DEBUG
+
+---
+# ------------------------------------------------------------
+# 4. Pod consuming ConfigMap as environment variables
+# ------------------------------------------------------------
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pod-configmap-env
+  namespace: default
+spec:
+  containers:
+    - name: app
+      image: busybox:1.36
+      command: ["sh", "-c", "env | sort && sleep 3600"]
+      env:
+        # 4a. Single key from ConfigMap
+        - name: APP_ENVIRONMENT
+          valueFrom:
+            configMapKeyRef:
+              name: app-config
+              key: APP_ENV
+        - name: PORT
+          valueFrom:
+            configMapKeyRef:
+              name: app-config
+              key: APP_PORT
+      # 4b. All keys from ConfigMap as env vars
+      envFrom:
+        - configMapRef:
+            name: app-config
+            # optional prefix to avoid naming conflicts
+            # prefix: CFG_
+      resources:
+        requests:
+          cpu: "50m"
+          memory: "64Mi"
+        limits:
+          cpu: "100m"
+          memory: "128Mi"
+  restartPolicy: Never
+
+---
+# ------------------------------------------------------------
+# 5. Pod consuming ConfigMap as a Volume (mounted as files)
+#    Each key in the ConfigMap becomes a file inside the dir.
+# ------------------------------------------------------------
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pod-configmap-volume
+  namespace: default
+spec:
+  containers:
+    - name: nginx
+      image: nginx:1.25.3
+      ports:
+        - containerPort: 80
+      volumeMounts:
+        # Mount entire ConfigMap – each key becomes a file
+        - name: nginx-conf
+          mountPath: /etc/nginx
+          readOnly: true
+        # Mount a single key as a specific file path
+        - name: app-props
+          mountPath: /app/config/application.properties
+          subPath: application.properties    # only mount this one key
+          readOnly: true
+      resources:
+        requests:
+          cpu: "100m"
+          memory: "128Mi"
+        limits:
+          cpu: "250m"
+          memory: "256Mi"
+
+  volumes:
+    - name: nginx-conf
+      configMap:
+        name: nginx-config
+        # Optionally set permissions on mounted files
+        defaultMode: 0644
+        # Optionally select only specific keys
+        items:
+          - key: nginx.conf
+            path: nginx.conf
+          - key: default.conf
+            path: conf.d/default.conf
+
+    - name: app-props
+      configMap:
+        name: app-properties
+        defaultMode: 0644
+
+  restartPolicy: Always
+
+---
+# ------------------------------------------------------------
+# 6. Immutable ConfigMap (k8s 1.21+)
+#    Cannot be updated; prevents accidental config change.
+#    Better performance (kubelet does not watch for changes).
+# ------------------------------------------------------------
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: immutable-config
+  namespace: default
+immutable: true              # set to true to make it immutable
+data:
+  DATABASE_HOST: "postgres.default.svc.cluster.local"
+  DATABASE_PORT: "5432"
+  REDIS_HOST: "redis.default.svc.cluster.local"
+
+---
+# ------------------------------------------------------------
+# 7. ConfigMap with binary data (binaryData field)
+#    Values must be base64-encoded.
+# ------------------------------------------------------------
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: binary-config
+  namespace: default
+# Regular string data
+data:
+  CONFIG_KEY: "some-value"
+# Binary data – base64 encoded
+binaryData:
+  tls.crt: LS0tLS1CRUdJTi...   # base64-encoded content (truncated for readability)
+
+---
+# ------------------------------------------------------------
+# Useful kubectl commands for ConfigMaps
+# ------------------------------------------------------------
+# Create from literal values:
+#   kubectl create configmap app-config \
+#     --from-literal=APP_ENV=production \
+#     --from-literal=APP_PORT=8080
+#
+# Create from a file:
+#   kubectl create configmap nginx-config --from-file=nginx.conf
+#
+# Create from a directory (each file becomes a key):
+#   kubectl create configmap app-configs --from-file=./configs/
+#
+# Apply from YAML:
+#   kubectl apply -f ConfigMaps.yaml
+#
+# View ConfigMap data:
+#   kubectl get configmap app-config
+#   kubectl describe configmap app-config
+#   kubectl get configmap app-config -o yaml
+#
+# Edit in-place (not allowed for immutable CMs):
+#   kubectl edit configmap app-config
+#
+# Delete:
+#   kubectl delete configmap app-config

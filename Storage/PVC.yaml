@@ -1,0 +1,231 @@
+# ============================================================
+# Kubernetes PersistentVolumeClaim (PVC) - Learning Reference
+# ============================================================
+# A PVC is a request for storage by a user/pod.
+# Kubernetes binds a PVC to a matching PV automatically.
+#
+# Binding rules:
+#   - Access mode matches
+#   - Requested storage <= PV capacity
+#   - StorageClass matches (or both empty)
+#   - Optional: selector labels match
+#
+# Dynamic provisioning:
+#   If no matching PV exists and a StorageClass is specified,
+#   Kubernetes creates a new PV automatically via the provisioner.
+# ============================================================
+
+
+# ------------------------------------------------------------
+# 1. Basic PVC – bound to any available PV that matches
+# ------------------------------------------------------------
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: basic-pvc
+  namespace: default
+  labels:
+    app: my-app
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+  # storageClassName: ""  # empty = use default StorageClass
+
+---
+# ------------------------------------------------------------
+# 2. PVC requesting a specific StorageClass (dynamic provisioning)
+# ------------------------------------------------------------
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: dynamic-pvc
+  namespace: default
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: gp3               # triggers dynamic provisioning
+  resources:
+    requests:
+      storage: 20Gi
+
+---
+# ------------------------------------------------------------
+# 3. PVC for ReadWriteMany (shared storage)
+#    Only supported by NFS, CephFS, Azure Files, GCS Fuse, etc.
+# ------------------------------------------------------------
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: shared-pvc
+  namespace: default
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: nfs-storage
+  resources:
+    requests:
+      storage: 50Gi
+
+---
+# ------------------------------------------------------------
+# 4. PVC with label selector (bind to a specific PV)
+# ------------------------------------------------------------
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: specific-pvc
+  namespace: default
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: ""               # disable dynamic provisioning
+  selector:
+    matchLabels:
+      type: local                    # only bind to PVs with this label
+  resources:
+    requests:
+      storage: 5Gi
+
+---
+# ------------------------------------------------------------
+# 5. Pod using a PVC
+# ------------------------------------------------------------
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pvc-pod-demo
+  namespace: default
+spec:
+  containers:
+    - name: app
+      image: busybox:1.36
+      command: ["sh", "-c", "echo hello > /data/test.txt && cat /data/test.txt && sleep 3600"]
+      volumeMounts:
+        - name: my-storage
+          mountPath: /data
+      resources:
+        requests:
+          cpu: "100m"
+          memory: "128Mi"
+        limits:
+          cpu: "250m"
+          memory: "256Mi"
+  volumes:
+    - name: my-storage
+      persistentVolumeClaim:
+        claimName: basic-pvc          # reference the PVC by name
+        readOnly: false
+
+---
+# ------------------------------------------------------------
+# 6. Deployment using a PVC (shared across replicas)
+#    Only safe with ReadWriteMany volumes; RWO causes contention.
+# ------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-with-pvc
+  namespace: default
+spec:
+  replicas: 3                        # all 3 pods share the same RWX volume
+  selector:
+    matchLabels:
+      app: nginx-storage
+  template:
+    metadata:
+      labels:
+        app: nginx-storage
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:1.25.3
+          volumeMounts:
+            - name: web-content
+              mountPath: /usr/share/nginx/html
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "250m"
+              memory: "256Mi"
+      volumes:
+        - name: web-content
+          persistentVolumeClaim:
+            claimName: shared-pvc    # must be ReadWriteMany
+
+---
+# ------------------------------------------------------------
+# 7. Volume Snapshot – point-in-time backup of a PVC (k8s 1.20+)
+#    Requires the Volume Snapshot Controller and a CSI driver
+#    that supports snapshots.
+# ------------------------------------------------------------
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshot
+metadata:
+  name: db-snapshot
+  namespace: default
+spec:
+  volumeSnapshotClassName: csi-aws-vsc   # VolumeSnapshotClass
+  source:
+    persistentVolumeClaimName: dynamic-pvc  # PVC to snapshot
+
+---
+# Restore a PVC from a snapshot
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: restored-pvc
+  namespace: default
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: gp3
+  resources:
+    requests:
+      storage: 20Gi
+  dataSource:
+    name: db-snapshot                # VolumeSnapshot to restore from
+    kind: VolumeSnapshot
+    apiGroup: snapshot.storage.k8s.io
+
+---
+# ------------------------------------------------------------
+# 8. Volume Expansion (resize an existing PVC)
+#    The StorageClass must have allowVolumeExpansion: true
+# ------------------------------------------------------------
+# To expand: edit the PVC and increase storage request
+# kubectl edit pvc dynamic-pvc
+# Then change: storage: 20Gi → 40Gi
+#
+# Check resize status:
+#   kubectl describe pvc dynamic-pvc
+#   # Look for: "Resizing" or "FileSystemResizePending"
+
+---
+# ------------------------------------------------------------
+# Useful kubectl commands for PVCs
+# ------------------------------------------------------------
+# List PVCs:
+#   kubectl get pvc
+#   kubectl get pvc -n default
+#
+# Describe a PVC (shows binding status, events):
+#   kubectl describe pvc basic-pvc
+#
+# PVC status:
+#   Pending – waiting for a matching PV or dynamic provisioning
+#   Bound   – successfully bound to a PV
+#   Lost    – bound PV has been deleted
+#
+# Delete a PVC (reclaimPolicy determines if PV/disk is deleted):
+#   kubectl delete pvc basic-pvc
+#
+# List PV and PVC bindings:
+#   kubectl get pv,pvc
+#
+# Force delete a stuck PVC:
+#   kubectl patch pvc <name> -p '{"metadata":{"finalizers":null}}'

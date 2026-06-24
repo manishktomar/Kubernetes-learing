@@ -1,0 +1,218 @@
+# ============================================================
+# Kubernetes Service: LoadBalancer - Learning Reference
+# ============================================================
+# LoadBalancer provisions a cloud provider load balancer
+# (AWS ELB/NLB, Azure LB, GCP LB) and assigns an external IP.
+#
+# Traffic flow:
+#   Internet → Cloud LB (external IP) → NodePort → ClusterIP → Pod
+#
+# Use LoadBalancer for:
+#   - Production internet-facing services on cloud clusters
+#   - When you need a dedicated external IP per service
+#
+# On bare-metal / local clusters:
+#   Use MetalLB: https://metallb.universe.tf
+#
+# Cost consideration:
+#   Each LoadBalancer service creates a separate cloud LB ($$).
+#   For multiple HTTP services, prefer a single Ingress resource.
+# ============================================================
+
+
+# ------------------------------------------------------------
+# 1. Basic LoadBalancer Service
+# ------------------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-lb
+  namespace: default
+  labels:
+    app: web
+spec:
+  type: LoadBalancer
+  selector:
+    app: web
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+      protocol: TCP
+  # externalTrafficPolicy: Cluster (default) | Local
+  # sessionAffinity: None (default) | ClientIP
+
+---
+# ------------------------------------------------------------
+# 2. AWS: Network Load Balancer (NLB) via annotations
+#    NLB handles TCP/UDP at Layer 4 with ultra-low latency.
+# ------------------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-nlb
+  namespace: default
+  annotations:
+    # Use NLB instead of Classic ELB
+    service.beta.kubernetes.io/aws-load-balancer-type: "external"
+    service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: "ip"
+    service.beta.kubernetes.io/aws-load-balancer-scheme: "internet-facing"  # or internal
+    service.beta.kubernetes.io/aws-load-balancer-cross-zone-load-balancing-enabled: "true"
+    # TLS termination at NLB
+    service.beta.kubernetes.io/aws-load-balancer-ssl-cert: "arn:aws:acm:us-east-1:123456789:certificate/abc"
+    service.beta.kubernetes.io/aws-load-balancer-ssl-ports: "443"
+    service.beta.kubernetes.io/aws-load-balancer-backend-protocol: "tcp"
+    # Health check
+    service.beta.kubernetes.io/aws-load-balancer-healthcheck-protocol: "TCP"
+    service.beta.kubernetes.io/aws-load-balancer-healthcheck-port: "traffic-port"
+spec:
+  type: LoadBalancer
+  selector:
+    app: web
+  ports:
+    - name: https
+      port: 443
+      targetPort: 8080
+  externalTrafficPolicy: Local    # preserve client IP, avoid double-hop
+
+---
+# ------------------------------------------------------------
+# 3. Azure: Internal (private) Load Balancer
+#    Only accessible within the VNet / private network.
+# ------------------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: internal-api-lb
+  namespace: default
+  annotations:
+    service.beta.kubernetes.io/azure-load-balancer-internal: "true"
+    service.beta.kubernetes.io/azure-load-balancer-internal-subnet: "internal-subnet"
+spec:
+  type: LoadBalancer
+  selector:
+    app: internal-api
+  ports:
+    - port: 443
+      targetPort: 8443
+  loadBalancerIP: 10.0.0.100      # request a specific private IP
+
+---
+# ------------------------------------------------------------
+# 4. GKE: Global External Load Balancer (Layer 7 via BackendConfig)
+# ------------------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-gke-lb
+  namespace: default
+  annotations:
+    cloud.google.com/backend-config: '{"default": "my-backendconfig"}'
+    cloud.google.com/neg: '{"ingress": true}'     # NEG-based routing
+spec:
+  type: LoadBalancer
+  selector:
+    app: web
+  ports:
+    - port: 80
+      targetPort: 8080
+
+---
+# GKE BackendConfig for health checks and CDN
+apiVersion: cloud.google.com/v1
+kind: BackendConfig
+metadata:
+  name: my-backendconfig
+  namespace: default
+spec:
+  healthCheck:
+    requestPath: /healthz
+    port: 8080
+    type: HTTP
+  cdn:
+    enabled: true
+    cachePolicy:
+      includeHost: true
+      includeProtocol: true
+
+---
+# ------------------------------------------------------------
+# 5. LoadBalancer with Session Affinity
+#    Routes traffic from the same client IP to the same pod.
+# ------------------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: stateful-app-lb
+  namespace: default
+spec:
+  type: LoadBalancer
+  selector:
+    app: stateful-app
+  sessionAffinity: ClientIP
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 10800       # 3 hours
+  ports:
+    - port: 80
+      targetPort: 8080
+
+---
+# ------------------------------------------------------------
+# 6. MetalLB LoadBalancer (bare-metal / local clusters)
+#    Install MetalLB first: https://metallb.universe.tf/installation
+# ------------------------------------------------------------
+# IPAddressPool (MetalLB v0.13+)
+apiVersion: metallb.io/v1beta1
+kind: IPAddressPool
+metadata:
+  name: first-pool
+  namespace: metallb-system
+spec:
+  addresses:
+    - 192.168.1.200-192.168.1.210   # IP range available on your LAN
+
+---
+apiVersion: metallb.io/v1beta1
+kind: L2Advertisement
+metadata:
+  name: l2-advert
+  namespace: metallb-system
+spec:
+  ipAddressPools:
+    - first-pool
+
+---
+# Service that MetalLB will assign an IP to
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-metallb
+  namespace: default
+spec:
+  type: LoadBalancer
+  selector:
+    app: web
+  ports:
+    - port: 80
+      targetPort: 8080
+  # optionally request a specific IP from the pool:
+  # loadBalancerIP: 192.168.1.201
+
+---
+# ------------------------------------------------------------
+# Useful kubectl commands for LoadBalancer
+# ------------------------------------------------------------
+# Wait for EXTERNAL-IP to be assigned:
+#   kubectl get svc web-lb -w
+#   # EXTERNAL-IP column changes from <pending> to an IP
+#
+# Get ExternalIP:
+#   kubectl get svc web-lb -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
+#   kubectl get svc web-lb -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' # AWS
+#
+# Test the LB:
+#   curl http://$(kubectl get svc web-lb -o jsonpath='{.status.loadBalancer.ingress[0].ip}')/
+#
+# Describe service:
+#   kubectl describe svc web-lb

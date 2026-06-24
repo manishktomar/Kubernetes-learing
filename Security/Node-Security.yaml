@@ -1,0 +1,1074 @@
+# ============================================================
+# Kubernetes Node Security - Advanced Learning Reference
+# ============================================================
+# Node security is critical because a compromised node means
+# ALL pods on that node are compromised. Nodes are the foundation
+# of cluster security.
+#
+# Key areas of Node Security:
+#   1.  Kubelet hardening & authentication
+#   2.  Node authorization & RBAC
+#   3.  OS-level hardening (CIS Benchmarks)
+#   4.  Kernel security modules (AppArmor, SELinux)
+#   5.  Node restrictions (NodeRestriction admission)
+#   6.  Taints & tolerations for workload isolation
+#   7.  Node labels & node affinity security
+#   8.  Container runtime security
+#   9.  Encryption at rest & in transit
+#  10.  Audit logging
+#  11.  Node auto-repair & integrity monitoring
+#  12.  SSH access restriction
+#  13.  Node image hardening (minimal OS)
+#  14.  Certificate rotation
+#  15.  Node network security (firewall rules)
+#
+# Principle: Treat nodes as cattle, not pets.
+#   - Immutable infrastructure
+#   - Auto-scaling groups with hardened AMIs/images
+#   - No SSH in production (use kubectl debug node/)
+# ============================================================
+
+
+# ############################################################
+# SECTION 1: Kubelet Hardening
+# ############################################################
+# The kubelet is the primary node agent. A misconfigured
+# kubelet is one of the most common attack vectors.
+#
+# Kubelet config file: /var/lib/kubelet/config.yaml
+# Kubelet flags are deprecated; use KubeletConfiguration.
+
+# 1.1 Secure KubeletConfiguration
+# File: /var/lib/kubelet/config.yaml
+# ------------------------------------------------------------
+# apiVersion: kubelet.config.k8s.io/v1beta1
+# kind: KubeletConfiguration
+#
+# # --- Authentication ---
+# authentication:
+#   anonymous:
+#     enabled: false                  # CRITICAL: Disable anonymous access
+#   webhook:
+#     enabled: true                   # Use API server for auth
+#     cacheTTL: "2m0s"
+#   x509:
+#     clientCAFile: /etc/kubernetes/pki/ca.crt
+#
+# # --- Authorization ---
+# authorization:
+#   mode: Webhook                     # Use API server RBAC (not AlwaysAllow!)
+#   webhook:
+#     cacheAuthorizedTTL: "5m0s"
+#     cacheUnauthorizedTTL: "30s"
+#
+# # --- TLS ---
+# tlsCertFile: /var/lib/kubelet/pki/kubelet.crt
+# tlsPrivateKeyFile: /var/lib/kubelet/pki/kubelet.key
+# tlsMinVersion: "VersionTLS12"      # Minimum TLS 1.2
+# tlsCipherSuites:
+#   - "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256"
+#   - "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"
+#   - "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384"
+#
+# # --- Security settings ---
+# readOnlyPort: 0                     # CRITICAL: Disable read-only port (10255)
+# protectKernelDefaults: true         # Fail if kernel params don't match
+# makeIPTablesUtilChains: true
+# eventRecordQPS: 50
+#
+# # --- Feature gates ---
+# featureGates:
+#   RotateKubeletServerCertificate: true  # Auto-rotate certs
+#
+# # --- Pod security ---
+# streamingConnectionIdleTimeout: "5m"  # Close idle streaming connections
+# rotateCertificates: true             # Auto-rotate client certificates
+# serverTLSBootstrap: true             # Request serving cert from API server
+#
+# # --- Resource management ---
+# evictionHard:
+#   memory.available: "100Mi"
+#   nodefs.available: "10%"
+#   imagefs.available: "15%"
+# kubeReserved:
+#   cpu: "200m"
+#   memory: "512Mi"
+# systemReserved:
+#   cpu: "200m"
+#   memory: "512Mi"
+
+---
+# ############################################################
+# SECTION 2: Node Authorization & NodeRestriction
+# ############################################################
+# NodeRestriction admission plugin limits what kubelets can do.
+# Prevents a compromised node from modifying other nodes' objects.
+#
+# Enable in kube-apiserver:
+#   --enable-admission-plugins=...,NodeRestriction
+#   --authorization-mode=Node,RBAC
+#
+# NodeRestriction ensures:
+#   - Kubelet can only modify its own Node object
+#   - Kubelet can only modify pods bound to its node
+#   - Kubelet cannot modify labels with node-restriction.kubernetes.io/ prefix
+#   - Kubelet cannot access secrets/configmaps not referenced by its pods
+
+# 2.1 Node labels that cannot be modified by kubelet
+#     (protected by NodeRestriction admission)
+apiVersion: v1
+kind: Node
+metadata:
+  name: worker-node-01
+  labels:
+    # These labels are protected - only admins can set them
+    node-restriction.kubernetes.io/security-zone: "high"
+    node-restriction.kubernetes.io/compliance: "pci-dss"
+    # Standard labels (kubelet can modify these)
+    kubernetes.io/os: linux
+    kubernetes.io/arch: amd64
+    node.kubernetes.io/instance-type: m5.large
+    topology.kubernetes.io/zone: us-east-1a
+
+---
+# ############################################################
+# SECTION 3: Taints & Tolerations for Workload Isolation
+# ############################################################
+# Use taints to create dedicated/isolated node pools.
+
+# 3.1 Taint nodes for specific workloads
+# kubectl taint nodes worker-node-01 security-zone=high:NoSchedule
+# kubectl taint nodes worker-node-01 dedicated=payment:NoExecute
+
+# 3.2 Pod that tolerates security-zone taint
+apiVersion: v1
+kind: Pod
+metadata:
+  name: payment-service
+  namespace: pci-zone
+spec:
+  tolerations:
+    - key: "security-zone"
+      operator: "Equal"
+      value: "high"
+      effect: "NoSchedule"
+    - key: "dedicated"
+      operator: "Equal"
+      value: "payment"
+      effect: "NoExecute"
+  nodeSelector:
+    node-restriction.kubernetes.io/security-zone: "high"
+  containers:
+    - name: payment
+      image: registry.company.io/payment:v3.1.0
+      securityContext:
+        runAsNonRoot: true
+        readOnlyRootFilesystem: true
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+
+---
+# 3.3 Taint node to prevent all scheduling (maintenance mode)
+# kubectl taint nodes worker-node-01 maintenance=true:NoExecute
+# kubectl drain worker-node-01 --ignore-daemonsets --delete-emptydir-data
+
+---
+# ############################################################
+# SECTION 4: Node Affinity for Security Boundaries
+# ############################################################
+
+# 4.1 Deployment restricted to specific secure nodes
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sensitive-workload
+  namespace: production
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: sensitive-workload
+  template:
+    metadata:
+      labels:
+        app: sensitive-workload
+    spec:
+      affinity:
+        nodeAffinity:
+          # Hard requirement - MUST run on hardened nodes
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: node-restriction.kubernetes.io/security-zone
+                    operator: In
+                    values: ["high", "critical"]
+                  - key: node.kubernetes.io/instance-type
+                    operator: In
+                    values: ["m5.large", "m5.xlarge"]
+          # Soft preference - prefer nodes with SSD
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              preference:
+                matchExpressions:
+                  - key: node.kubernetes.io/disk-type
+                    operator: In
+                    values: ["ssd"]
+        # Anti-affinity - spread across nodes for HA
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchExpressions:
+                  - key: app
+                    operator: In
+                    values: ["sensitive-workload"]
+              topologyKey: "kubernetes.io/hostname"
+      containers:
+        - name: app
+          image: registry.company.io/sensitive-app:v2.0.0
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+
+---
+# ############################################################
+# SECTION 5: API Server → Node Communication Security
+# ############################################################
+# Secure communication between API server and kubelets.
+#
+# kube-apiserver flags for node security:
+# --kubelet-certificate-authority=/etc/kubernetes/pki/ca.crt
+# --kubelet-client-certificate=/etc/kubernetes/pki/apiserver-kubelet-client.crt
+# --kubelet-client-key=/etc/kubernetes/pki/apiserver-kubelet-client.key
+# --kubelet-preferred-address-types=InternalIP  # Don't use hostname (DNS spoofing)
+#
+# This ensures:
+#   - API server verifies kubelet's TLS certificate
+#   - Kubelet verifies API server's identity
+#   - All communication is encrypted (mTLS)
+
+---
+# ############################################################
+# SECTION 6: Encryption at Rest (etcd & Secrets)
+# ############################################################
+# Protects data stored in etcd from direct disk access attacks.
+#
+# EncryptionConfiguration file: /etc/kubernetes/encryption-config.yaml
+
+# 6.1 EncryptionConfiguration (apply to kube-apiserver)
+# File: /etc/kubernetes/encryption-config.yaml
+# --encryption-provider-config=/etc/kubernetes/encryption-config.yaml
+# ------------------------------------------------------------
+# apiVersion: apiserver.config.k8s.io/v1
+# kind: EncryptionConfiguration
+# resources:
+#   - resources:
+#       - secrets
+#       - configmaps
+#     providers:
+#       # AES-GCM (recommended for performance + security)
+#       - aesgcm:
+#           keys:
+#             - name: key-2024
+#               secret: <base64-encoded-32-byte-key>
+#       # AES-CBC (alternative)
+#       - aescbc:
+#           keys:
+#             - name: key-backup
+#               secret: <base64-encoded-32-byte-key>
+#       # KMS v2 (best - uses external key management)
+#       - kms:
+#           apiVersion: v2
+#           name: aws-kms-provider
+#           endpoint: unix:///var/run/kms-provider/socket.sock
+#           timeout: 3s
+#       # identity is the fallback (no encryption)
+#       - identity: {}
+
+---
+# ############################################################
+# SECTION 7: Audit Logging
+# ############################################################
+# Kubernetes audit logs capture all API server requests.
+# Critical for detecting unauthorized access attempts.
+#
+# kube-apiserver flags:
+# --audit-policy-file=/etc/kubernetes/audit-policy.yaml
+# --audit-log-path=/var/log/kubernetes/audit.log
+# --audit-log-maxage=30
+# --audit-log-maxbackup=10
+# --audit-log-maxsize=100  (MB)
+# --audit-log-format=json
+
+# 7.1 Audit Policy (what to log)
+# File: /etc/kubernetes/audit-policy.yaml
+# ------------------------------------------------------------
+# apiVersion: audit.k8s.io/v1
+# kind: Policy
+# rules:
+#   # Don't log read-only requests to certain endpoints
+#   - level: None
+#     users: ["system:kube-proxy"]
+#     verbs: ["watch"]
+#     resources:
+#       - group: ""
+#         resources: ["endpoints", "services", "services/status"]
+#
+#   # Don't log kubelet health checks
+#   - level: None
+#     nonResourceURLs:
+#       - "/healthz*"
+#       - "/readyz*"
+#       - "/livez*"
+#
+#   # Log secret access at Metadata level (no secret content)
+#   - level: Metadata
+#     resources:
+#       - group: ""
+#         resources: ["secrets", "configmaps", "tokenreviews"]
+#
+#   # Log node modifications at RequestResponse level
+#   - level: RequestResponse
+#     resources:
+#       - group: ""
+#         resources: ["nodes", "nodes/status"]
+#     verbs: ["create", "update", "patch", "delete"]
+#
+#   # Log all other write operations at Request level
+#   - level: Request
+#     verbs: ["create", "update", "patch", "delete"]
+#     resources:
+#       - group: ""
+#       - group: "apps"
+#       - group: "rbac.authorization.k8s.io"
+#
+#   # Log everything else at Metadata level
+#   - level: Metadata
+#     omitStages:
+#       - "RequestReceived"
+
+---
+# ############################################################
+# SECTION 8: Container Runtime Security
+# ############################################################
+# The container runtime (containerd, CRI-O) must be hardened.
+
+# 8.1 containerd configuration (/etc/containerd/config.toml)
+# ------------------------------------------------------------
+# [plugins."io.containerd.grpc.v1.cri"]
+#   # Disable deprecated CRI v1alpha2
+#   enable_unprivileged_ports = false
+#   enable_unprivileged_icmp = false
+#
+#   [plugins."io.containerd.grpc.v1.cri".containerd]
+#     # Use default seccomp profile
+#     default_runtime_name = "runc"
+#
+#     [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc]
+#       runtime_type = "io.containerd.runc.v2"
+#
+#       [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc.options]
+#         # Enable seccomp by default
+#         SystemdCgroup = true
+#
+#   [plugins."io.containerd.grpc.v1.cri".registry]
+#     # Only allow pulling from trusted registries
+#     [plugins."io.containerd.grpc.v1.cri".registry.mirrors]
+#       [plugins."io.containerd.grpc.v1.cri".registry.mirrors."docker.io"]
+#         endpoint = ["https://registry-mirror.company.io"]
+#
+#   # Enable image verification (cosign/notation)
+#   [plugins."io.containerd.grpc.v1.cri".image_verification]
+#     enable = true
+
+---
+# ############################################################
+# SECTION 9: Node-Level Firewall Rules (iptables/nftables)
+# ############################################################
+# Restrict network access TO and FROM nodes.
+#
+# Required ports on WORKER nodes:
+#   10250/tcp  - Kubelet API (authenticated)
+#   30000-32767/tcp - NodePort Services (if used)
+#
+# Required ports on CONTROL PLANE:
+#   6443/tcp   - Kubernetes API Server
+#   2379-2380/tcp - etcd (control plane only)
+#   10250/tcp  - Kubelet API
+#   10257/tcp  - kube-controller-manager
+#   10259/tcp  - kube-scheduler
+#
+# BLOCK these ports from external access:
+#   10255/tcp  - Kubelet read-only (should be disabled)
+#   10248/tcp  - Kubelet health check
+#   4194/tcp   - cAdvisor (deprecated)
+
+# 9.1 Example: Calico GlobalNetworkPolicy for node protection
+apiVersion: projectcalico.org/v3
+kind: GlobalNetworkPolicy
+metadata:
+  name: restrict-node-access
+spec:
+  order: 100
+  selector: "has(kubernetes.io/os)"   # Apply to all nodes
+  types:
+    - Ingress
+  ingress:
+    # Allow kubelet API from control plane only
+    - action: Allow
+      protocol: TCP
+      source:
+        selector: "node-role.kubernetes.io/control-plane == ''"
+      destination:
+        ports: [10250]
+    # Allow NodePort range from load balancers only
+    - action: Allow
+      protocol: TCP
+      source:
+        nets: ["10.0.0.0/8"]         # Internal LB subnet
+      destination:
+        ports: ["30000:32767"]
+    # Deny all other direct node access
+    - action: Deny
+      protocol: TCP
+      destination:
+        ports: [10255, 10248, 4194]
+
+---
+# ############################################################
+# SECTION 10: Certificate Rotation & Management
+# ############################################################
+# Kubernetes certificates expire. Auto-rotation prevents outages
+# and ensures compromised certs have limited lifetime.
+#
+# Kubelet certificate rotation:
+#   - Client cert: --rotate-certificates (kubelet flag)
+#   - Server cert: RotateKubeletServerCertificate feature gate
+#
+# kube-apiserver flags:
+#   --kubelet-certificate-authority=/etc/kubernetes/pki/ca.crt
+#   --tls-cert-file=/etc/kubernetes/pki/apiserver.crt
+#   --tls-private-key-file=/etc/kubernetes/pki/apiserver.key
+#
+# Check certificate expiry:
+#   kubeadm certs check-expiration
+#   openssl x509 -in /etc/kubernetes/pki/apiserver.crt -noout -dates
+#
+# Renew certificates:
+#   kubeadm certs renew all
+#
+# Auto-approve kubelet CSRs (for certificate rotation):
+
+# 10.1 ClusterRoleBinding for auto-approving kubelet CSRs
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: auto-approve-kubelet-csr
+subjects:
+  - kind: Group
+    name: system:bootstrappers
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole
+  name: system:certificates.k8s.io:certificatesigningrequests:nodeclient
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# 10.2 ClusterRoleBinding for kubelet self-renewal
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: auto-approve-kubelet-renewal
+subjects:
+  - kind: Group
+    name: system:nodes
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole
+  name: system:certificates.k8s.io:certificatesigningrequests:selfnodeclient
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# ############################################################
+# SECTION 11: Node Integrity Monitoring (DaemonSet)
+# ############################################################
+
+# 11.1 Falco DaemonSet for runtime threat detection
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: falco
+  namespace: security
+  labels:
+    app: falco
+spec:
+  selector:
+    matchLabels:
+      app: falco
+  template:
+    metadata:
+      labels:
+        app: falco
+    spec:
+      # Falco needs privileged access to monitor syscalls
+      serviceAccountName: falco-sa
+      hostNetwork: true
+      hostPID: true
+      tolerations:
+        - effect: NoSchedule
+          operator: Exists            # Run on ALL nodes including tainted
+      containers:
+        - name: falco
+          image: falcosecurity/falco:0.37.1
+          securityContext:
+            privileged: true          # Required for eBPF/kernel module
+          volumeMounts:
+            - name: dev
+              mountPath: /host/dev
+              readOnly: true
+            - name: proc
+              mountPath: /host/proc
+              readOnly: true
+            - name: boot
+              mountPath: /host/boot
+              readOnly: true
+            - name: lib-modules
+              mountPath: /host/lib/modules
+              readOnly: true
+            - name: usr
+              mountPath: /host/usr
+              readOnly: true
+            - name: etc
+              mountPath: /host/etc
+              readOnly: true
+            - name: falco-config
+              mountPath: /etc/falco
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "512Mi"
+            limits:
+              cpu: "1000m"
+              memory: "1Gi"
+      volumes:
+        - name: dev
+          hostPath:
+            path: /dev
+        - name: proc
+          hostPath:
+            path: /proc
+        - name: boot
+          hostPath:
+            path: /boot
+        - name: lib-modules
+          hostPath:
+            path: /lib/modules
+        - name: usr
+          hostPath:
+            path: /usr
+        - name: etc
+          hostPath:
+            path: /etc
+        - name: falco-config
+          configMap:
+            name: falco-config
+
+---
+# 11.2 Falco ConfigMap with security rules
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: falco-config
+  namespace: security
+data:
+  falco.yaml: |
+    rules_file:
+      - /etc/falco/falco_rules.yaml
+      - /etc/falco/custom_rules.yaml
+    json_output: true
+    log_stderr: true
+    log_syslog: true
+    priority: warning
+  custom_rules.yaml: |
+    # Detect shell spawned in a container
+    - rule: Shell in container
+      desc: Detect shell spawned inside a container
+      condition: >
+        spawned_process and container and
+        proc.name in (bash, sh, zsh, dash, ksh)
+      output: >
+        Shell spawned in container
+        (user=%user.name container=%container.name
+        shell=%proc.name parent=%proc.pname)
+      priority: WARNING
+
+    # Detect write to /etc in container
+    - rule: Write to /etc in container
+      desc: Detect file write to /etc directory
+      condition: >
+        open_write and container and fd.name startswith /etc
+      output: >
+        Write to /etc detected
+        (user=%user.name file=%fd.name container=%container.name)
+      priority: ERROR
+
+    # Detect crypto mining
+    - rule: Crypto mining detection
+      desc: Detect potential crypto mining activity
+      condition: >
+        spawned_process and container and
+        (proc.name in (xmrig, minerd, minergate, cpuminer) or
+         proc.cmdline contains "stratum+tcp")
+      output: >
+        Crypto miner detected
+        (user=%user.name process=%proc.name container=%container.name)
+      priority: CRITICAL
+
+---
+# ############################################################
+# SECTION 12: Node Problem Detector (DaemonSet)
+# ############################################################
+# Detects node-level issues: kernel deadlocks, OOM, filesystem
+# corruption, container runtime issues, NTP problems.
+
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: node-problem-detector
+  namespace: kube-system
+  labels:
+    app: node-problem-detector
+spec:
+  selector:
+    matchLabels:
+      app: node-problem-detector
+  template:
+    metadata:
+      labels:
+        app: node-problem-detector
+    spec:
+      serviceAccountName: node-problem-detector
+      hostNetwork: true
+      tolerations:
+        - operator: Exists
+      containers:
+        - name: node-problem-detector
+          image: registry.k8s.io/node-problem-detector/node-problem-detector:v0.8.14
+          command: ["/node-problem-detector"]
+          args:
+            - "--logtostderr"
+            - "--system-log-monitors=/config/kernel-monitor.json,/config/docker-monitor.json"
+            - "--custom-plugin-monitors=/config/health-checker-kubelet.json"
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - name: log
+              mountPath: /var/log
+              readOnly: true
+            - name: kmsg
+              mountPath: /dev/kmsg
+              readOnly: true
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "80Mi"
+            limits:
+              cpu: "200m"
+              memory: "128Mi"
+      volumes:
+        - name: log
+          hostPath:
+            path: /var/log
+        - name: kmsg
+          hostPath:
+            path: /dev/kmsg
+
+---
+# ############################################################
+# SECTION 13: OS-Level Hardening (CIS Kubernetes Benchmark)
+# ############################################################
+# Apply CIS Kubernetes Benchmark recommendations for nodes.
+#
+# Key hardening steps (worker nodes):
+#
+# --- File permissions ---
+# chmod 644 /etc/kubernetes/kubelet.conf
+# chmod 600 /var/lib/kubelet/config.yaml
+# chmod 600 /etc/kubernetes/pki/*.key
+# chown root:root /etc/kubernetes/kubelet.conf
+#
+# --- Kernel parameters (sysctl) ---
+# /etc/sysctl.d/90-kubelet.conf:
+#   net.bridge.bridge-nf-call-iptables = 1
+#   net.bridge.bridge-nf-call-ip6tables = 1
+#   net.ipv4.ip_forward = 1
+#   vm.panic_on_oom = 0
+#   vm.overcommit_memory = 1
+#   kernel.panic = 10
+#   kernel.panic_on_oops = 1
+#
+# --- Disable unnecessary services ---
+# systemctl disable --now rpcbind
+# systemctl disable --now avahi-daemon
+# systemctl disable --now cups
+#
+# --- SSH hardening (if SSH is enabled) ---
+# /etc/ssh/sshd_config:
+#   PermitRootLogin no
+#   PasswordAuthentication no
+#   PubkeyAuthentication yes
+#   MaxAuthTries 3
+#   ClientAliveInterval 300
+#   ClientAliveCountMax 2
+#   AllowUsers kubernetes-admin
+#   Protocol 2
+#
+# --- Automatic security updates ---
+# apt install unattended-upgrades  (Ubuntu/Debian)
+# dnf install dnf-automatic        (RHEL/CentOS)
+
+---
+# ############################################################
+# SECTION 14: Node Auto-Scaling Security
+# ############################################################
+# Secure the Cluster Autoscaler configuration.
+
+# 14.1 Cluster Autoscaler ServiceAccount with minimal RBAC
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cluster-autoscaler
+  namespace: kube-system
+  annotations:
+    # AWS IRSA (avoid static credentials)
+    eks.amazonaws.com/role-arn: arn:aws:iam::123456789:role/cluster-autoscaler
+    # GCP Workload Identity
+    # iam.gke.io/gcp-service-account: autoscaler@project.iam.gserviceaccount.com
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cluster-autoscaler
+rules:
+  - apiGroups: [""]
+    resources: ["events", "endpoints"]
+    verbs: ["create", "patch"]
+  - apiGroups: [""]
+    resources: ["pods/eviction"]
+    verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["pods/status"]
+    verbs: ["update"]
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["watch", "list", "get", "update"]
+  - apiGroups: [""]
+    resources: ["namespaces", "pods", "services", "replicationcontrollers",
+                "persistentvolumeclaims", "persistentvolumes"]
+    verbs: ["watch", "list", "get"]
+  - apiGroups: ["apps"]
+    resources: ["daemonsets", "replicasets", "statefulsets"]
+    verbs: ["watch", "list", "get"]
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["watch", "list", "get"]
+  - apiGroups: ["policy"]
+    resources: ["poddisruptionbudgets"]
+    verbs: ["watch", "list"]
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses", "csinodes", "csidrivers", "csistoragecapacities"]
+    verbs: ["watch", "list", "get"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["create", "get", "list", "update"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: cluster-autoscaler
+subjects:
+  - kind: ServiceAccount
+    name: cluster-autoscaler
+    namespace: kube-system
+roleRef:
+  kind: ClusterRole
+  name: cluster-autoscaler
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# ############################################################
+# SECTION 15: Node Image Security (Minimal OS)
+# ############################################################
+# Use purpose-built, minimal OS images for nodes:
+#
+# Recommended minimal OS options:
+#   - Bottlerocket (AWS) - immutable, auto-updating
+#   - Flatcar Container Linux - minimal, auto-updating
+#   - Talos Linux - immutable, API-driven, no SSH
+#   - Google Container-Optimized OS (GKE)
+#   - Ubuntu Minimal / Debian Slim
+#
+# Benefits of minimal OS:
+#   - Smaller attack surface (no package manager, no shell)
+#   - Faster boot time
+#   - Immutable filesystem
+#   - Automatic security updates
+#   - No SSH = no remote access attack vector
+#
+# Talos Linux example (declarative, no SSH):
+# talosctl gen config my-cluster https://api-server:6443
+# talosctl apply-config --insecure --nodes <ip> --file controlplane.yaml
+
+---
+# ############################################################
+# SECTION 16: Kube-bench (CIS Benchmark Scanner)
+# ############################################################
+# Run kube-bench as a Job to audit node security compliance.
+
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: kube-bench-node
+  namespace: security
+spec:
+  template:
+    metadata:
+      labels:
+        app: kube-bench
+    spec:
+      hostPID: true
+      restartPolicy: Never
+      containers:
+        - name: kube-bench
+          image: aquasec/kube-bench:v0.7.1
+          command: ["kube-bench", "run", "--targets", "node"]
+          volumeMounts:
+            - name: var-lib-kubelet
+              mountPath: /var/lib/kubelet
+              readOnly: true
+            - name: etc-kubernetes
+              mountPath: /etc/kubernetes
+              readOnly: true
+            - name: etc-systemd
+              mountPath: /etc/systemd
+              readOnly: true
+            - name: usr-bin
+              mountPath: /usr/local/mount-from-host/bin
+              readOnly: true
+      volumes:
+        - name: var-lib-kubelet
+          hostPath:
+            path: /var/lib/kubelet
+        - name: etc-kubernetes
+          hostPath:
+            path: /etc/kubernetes
+        - name: etc-systemd
+          hostPath:
+            path: /etc/systemd
+        - name: usr-bin
+          hostPath:
+            path: /usr/bin
+
+---
+# ############################################################
+# SECTION 17: Node Maintenance & Secure Upgrades
+# ############################################################
+# Safely drain and upgrade nodes without compromising security.
+#
+# Upgrade workflow:
+#   1. Cordon the node (prevent new scheduling)
+#      kubectl cordon <node-name>
+#
+#   2. Drain the node (evict existing pods gracefully)
+#      kubectl drain <node-name> \
+#        --ignore-daemonsets \
+#        --delete-emptydir-data \
+#        --grace-period=60 \
+#        --timeout=300s
+#
+#   3. Upgrade kubelet & kubectl
+#      apt-mark unhold kubelet kubectl
+#      apt-get update && apt-get install -y kubelet=1.30.x-* kubectl=1.30.x-*
+#      apt-mark hold kubelet kubectl
+#
+#   4. Restart kubelet
+#      systemctl daemon-reload
+#      systemctl restart kubelet
+#
+#   5. Uncordon the node
+#      kubectl uncordon <node-name>
+#
+#   6. Verify node health
+#      kubectl get node <node-name>
+#      kubectl describe node <node-name> | grep -A5 Conditions
+
+---
+# ############################################################
+# SECTION 18: Debugging Nodes Securely (kubectl debug)
+# ############################################################
+# Instead of SSH, use kubectl debug to troubleshoot nodes.
+# This provides audit trail and RBAC-controlled access.
+#
+# Debug a node (creates a privileged pod on the node):
+#   kubectl debug node/worker-node-01 -it --image=ubuntu:22.04
+#
+# This mounts the node filesystem at /host:
+#   chroot /host         # Access node's root filesystem
+#   journalctl -u kubelet --since "1 hour ago"
+#   crictl ps            # List running containers
+#   crictl logs <id>     # View container logs
+#
+# RBAC to restrict who can debug nodes:
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: node-debugger
+rules:
+  - apiGroups: [""]
+    resources: ["nodes/proxy"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["create", "delete", "get"]
+  - apiGroups: [""]
+    resources: ["pods/attach"]
+    verbs: ["create"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: node-debugger-binding
+subjects:
+  - kind: Group
+    name: sre-team
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole
+  name: node-debugger
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# ############################################################
+# SECTION 19: Node Resource Protection (Priority Classes)
+# ############################################################
+# Ensure critical system components are never evicted.
+
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: system-node-critical
+value: 2000001000
+globalDefault: false
+description: "Used for critical node components that must not be evicted"
+preemptionPolicy: PreemptLowerPriority
+
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: security-critical
+value: 1000000000
+globalDefault: false
+description: "Used for security monitoring DaemonSets (Falco, etc.)"
+preemptionPolicy: PreemptLowerPriority
+
+---
+# ############################################################
+# SECTION 20: Kubelet Garbage Collection & Image Security
+# ############################################################
+# Prevent disk exhaustion attacks and stale image vulnerabilities.
+#
+# KubeletConfiguration settings:
+# imageMinimumGCAge: "2m"           # Min age before GC
+# imageMaximumGCAge: "168h"         # Force remove images older than 7 days
+# imageGCHighThresholdPercent: 85   # Start GC at 85% disk usage
+# imageGCLowThresholdPercent: 80    # Stop GC at 80% disk usage
+# containerGCPeriod: "1m"           # Run container GC every minute
+# evictionHard:
+#   imagefs.available: "15%"        # Evict pods if image disk < 15%
+#   nodefs.available: "10%"         # Evict pods if node disk < 10%
+#   memory.available: "100Mi"       # Evict pods if memory < 100Mi
+
+
+# ############################################################
+# QUICK REFERENCE: kubectl commands for Node Security
+# ############################################################
+#
+# --- Node status & health ---
+# kubectl get nodes -o wide
+# kubectl describe node <node-name>
+# kubectl top nodes
+#
+# --- Check node conditions ---
+# kubectl get nodes -o json | jq '.items[].status.conditions'
+#
+# --- Cordon/Drain for maintenance ---
+# kubectl cordon <node>
+# kubectl drain <node> --ignore-daemonsets --delete-emptydir-data
+# kubectl uncordon <node>
+#
+# --- Check kubelet configuration ---
+# kubectl proxy &
+# curl -s http://localhost:8001/api/v1/nodes/<node>/proxy/configz
+#
+# --- Verify kubelet authentication ---
+# curl -sk https://<node-ip>:10250/healthz  # Should return 401 if secured
+# curl -sk https://<node-ip>:10255/healthz  # Should fail (port disabled)
+#
+# --- Check node certificates ---
+# openssl x509 -in /etc/kubernetes/pki/apiserver.crt -noout -text
+# kubeadm certs check-expiration
+#
+# --- Run CIS benchmark ---
+# kubectl apply -f kube-bench-job.yaml
+# kubectl logs job/kube-bench-node -n security
+#
+# --- Debug a node ---
+# kubectl debug node/<node-name> -it --image=ubuntu:22.04
+#
+# --- Check node taints ---
+# kubectl get nodes -o json | jq '.items[]|{name:.metadata.name,taints:.spec.taints}'
+#
+# --- Check RBAC for node operations ---
+# kubectl auth can-i create nodes --as=system:serviceaccount:kube-system:cluster-autoscaler
+#
+# --- List pods on a specific node ---
+# kubectl get pods --all-namespaces --field-selector spec.nodeName=<node-name>
+#
+# --- Check node allocatable resources ---
+# kubectl describe node <node-name> | grep -A10 "Allocatable:"
+#
+# ############################################################
+# NODE SECURITY CHECKLIST
+# ############################################################
+#
+# [ ] Kubelet anonymous auth disabled (authentication.anonymous.enabled=false)
+# [ ] Kubelet authorization mode = Webhook (not AlwaysAllow)
+# [ ] Kubelet read-only port disabled (readOnlyPort: 0)
+# [ ] TLS configured for kubelet (cert + key)
+# [ ] TLS minimum version ≥ 1.2
+# [ ] Certificate rotation enabled (rotateCertificates: true)
+# [ ] NodeRestriction admission plugin enabled
+# [ ] Encryption at rest configured for etcd
+# [ ] Audit logging enabled with appropriate policy
+# [ ] Minimal OS image (Bottlerocket, Talos, Flatcar)
+# [ ] No SSH access (use kubectl debug node/)
+# [ ] CIS Kubernetes Benchmark passed (kube-bench)
+# [ ] Falco or runtime security monitoring deployed
+# [ ] Node Problem Detector running
+# [ ] Firewall rules restrict kubelet port access
+# [ ] Automatic security updates enabled
+# [ ] Kernel hardened (sysctl parameters applied)
+# [ ] Unnecessary services disabled
+# [ ] File permissions per CIS benchmark
+# [ ] Resource reservations set (kubeReserved, systemReserved)
+# [ ] Eviction thresholds configured
+# [ ] Tainted nodes for workload isolation
+# [ ] PriorityClasses for critical components
+# [ ] Container runtime hardened (containerd/CRI-O config)
+# [ ] Image garbage collection configured
+# [ ] Node auto-scaling with secure IAM/RBAC
+#

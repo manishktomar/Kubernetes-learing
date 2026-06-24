@@ -1,0 +1,331 @@
+# ============================================================
+# Kubernetes Probes - Learning Reference
+# ============================================================
+# Kubernetes has three types of health probes:
+#
+#   Liveness  – Is the container alive? If it fails, k8s restarts the container.
+#   Readiness – Is the container ready to serve traffic? If it fails, the pod is
+#               removed from Service endpoints (no traffic sent to it).
+#   Startup   – Is the container done starting up? Until it passes, liveness and
+#               readiness probes are disabled. Useful for slow-starting apps.
+#
+# Probe mechanisms:
+#   httpGet   – HTTP GET request; success if status code is 2xx/3xx
+#   tcpSocket – TCP connection attempt; success if connection is established
+#   exec      – Execute a command inside the container; success if exit code is 0
+#   grpc      – gRPC health check (k8s 1.24+); requires app to implement the
+#               gRPC Health Checking Protocol
+#
+# Key fields (shared by all probe types):
+#   initialDelaySeconds  – wait before first check (default: 0)
+#   periodSeconds        – how often to probe (default: 10)
+#   timeoutSeconds       – probe timeout (default: 1)
+#   successThreshold     – consecutive successes needed (default: 1, min for liveness: 1)
+#   failureThreshold     – consecutive failures before action (default: 3)
+# ============================================================
+
+
+# ------------------------------------------------------------
+# 1. HTTP GET probes (most common for web apps)
+# ------------------------------------------------------------
+apiVersion: v1
+kind: Pod
+metadata:
+  name: httpget-probe-demo
+  namespace: default
+  labels:
+    app: httpget-demo
+spec:
+  containers:
+    - name: app
+      image: nginx:1.25.3
+      ports:
+        - containerPort: 80
+
+      # Startup probe – disable liveness/readiness until app is ready
+      startupProbe:
+        httpGet:
+          path: /healthz        # your app's startup/health endpoint
+          port: 80
+          httpHeaders:
+            - name: Custom-Header
+              value: StartupCheck
+        initialDelaySeconds: 0  # start checking immediately
+        periodSeconds: 5
+        failureThreshold: 30    # allow up to 30x5=150s for startup
+        successThreshold: 1
+
+      # Liveness probe – restart container if app is hung/deadlocked
+      livenessProbe:
+        httpGet:
+          path: /healthz
+          port: 80
+        initialDelaySeconds: 10   # wait 10s before first check
+        periodSeconds: 15         # check every 15s
+        timeoutSeconds: 5         # wait up to 5s for response
+        failureThreshold: 3       # restart after 3 consecutive failures
+        successThreshold: 1       # 1 success clears the failure count
+
+      # Readiness probe – stop sending traffic if app is not ready
+      readinessProbe:
+        httpGet:
+          path: /ready
+          port: 80
+        initialDelaySeconds: 5
+        periodSeconds: 10
+        timeoutSeconds: 3
+        failureThreshold: 3
+        successThreshold: 2       # require 2 consecutive successes to become Ready
+
+      resources:
+        requests:
+          cpu: "100m"
+          memory: "128Mi"
+        limits:
+          cpu: "250m"
+          memory: "256Mi"
+
+---
+# ------------------------------------------------------------
+# 2. Exec probes (run a command inside the container)
+# ------------------------------------------------------------
+apiVersion: v1
+kind: Pod
+metadata:
+  name: exec-probe-demo
+  namespace: default
+spec:
+  containers:
+    - name: mysql
+      image: mysql:8.0.36
+      env:
+        - name: MYSQL_ROOT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: mysql-secret
+              key: root-password
+      ports:
+        - containerPort: 3306
+
+      # Liveness: check mysqladmin ping
+      livenessProbe:
+        exec:
+          command:
+            - sh
+            - -c
+            - "mysqladmin ping -u root -p${MYSQL_ROOT_PASSWORD} --silent"
+        initialDelaySeconds: 30
+        periodSeconds: 10
+        timeoutSeconds: 5
+        failureThreshold: 3
+
+      # Readiness: check we can actually query the DB
+      readinessProbe:
+        exec:
+          command:
+            - sh
+            - -c
+            - "mysql -u root -p${MYSQL_ROOT_PASSWORD} -e 'SELECT 1' --silent"
+        initialDelaySeconds: 10
+        periodSeconds: 5
+        timeoutSeconds: 3
+        failureThreshold: 3
+
+      # Startup: wait max 120s for MySQL to initialise
+      startupProbe:
+        exec:
+          command:
+            - sh
+            - -c
+            - "mysqladmin ping -u root -p${MYSQL_ROOT_PASSWORD} --silent"
+        initialDelaySeconds: 10
+        periodSeconds: 5
+        failureThreshold: 24     # 24x5 = 120s maximum startup time
+
+      resources:
+        requests:
+          cpu: "250m"
+          memory: "512Mi"
+        limits:
+          cpu: "500m"
+          memory: "1Gi"
+
+---
+# ------------------------------------------------------------
+# 3. TCP Socket probes (good for non-HTTP protocols)
+# ------------------------------------------------------------
+apiVersion: v1
+kind: Pod
+metadata:
+  name: tcp-probe-demo
+  namespace: default
+spec:
+  containers:
+    - name: redis
+      image: redis:7.2.4-alpine
+      ports:
+        - containerPort: 6379
+
+      livenessProbe:
+        tcpSocket:
+          port: 6379            # check if TCP port is open
+        initialDelaySeconds: 15
+        periodSeconds: 10
+        failureThreshold: 3
+
+      readinessProbe:
+        tcpSocket:
+          port: 6379
+        initialDelaySeconds: 5
+        periodSeconds: 10
+        failureThreshold: 3
+
+      # For Redis, prefer exec + redis-cli ping for more accurate checks:
+      # livenessProbe:
+      #   exec:
+      #     command: ["redis-cli", "ping"]
+
+      resources:
+        requests:
+          cpu: "100m"
+          memory: "128Mi"
+        limits:
+          cpu: "250m"
+          memory: "256Mi"
+
+---
+# ------------------------------------------------------------
+# 4. gRPC probe (k8s 1.24+, GA in 1.27)
+#    App must implement the gRPC Health Checking Protocol:
+#    https://github.com/grpc/grpc/blob/master/doc/health-checking.md
+# ------------------------------------------------------------
+apiVersion: v1
+kind: Pod
+metadata:
+  name: grpc-probe-demo
+  namespace: default
+spec:
+  containers:
+    - name: grpc-app
+      image: my-grpc-service:1.0.0
+      ports:
+        - containerPort: 50051
+
+      livenessProbe:
+        grpc:
+          port: 50051
+          service: ""           # empty string checks the whole server
+        initialDelaySeconds: 10
+        periodSeconds: 15
+        failureThreshold: 3
+
+      readinessProbe:
+        grpc:
+          port: 50051
+          service: "my.service.MyService"   # check a specific service
+        initialDelaySeconds: 5
+        periodSeconds: 10
+        failureThreshold: 3
+
+      resources:
+        requests:
+          cpu: "100m"
+          memory: "128Mi"
+        limits:
+          cpu: "250m"
+          memory: "256Mi"
+
+---
+# ------------------------------------------------------------
+# 5. Deployment demonstrating all three probe types together
+#    with a Spring Boot application pattern
+# ------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: springboot-app
+  namespace: default
+  labels:
+    app: springboot
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: springboot
+  template:
+    metadata:
+      labels:
+        app: springboot
+    spec:
+      containers:
+        - name: app
+          image: my-springboot-app:1.0.0
+          ports:
+            - containerPort: 8080
+
+          # Spring Boot Actuator endpoints
+          # /actuator/health/liveness  → liveness
+          # /actuator/health/readiness → readiness
+          # (enabled with spring.endpoint.health.probes.enabled=true)
+
+          startupProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 5
+            failureThreshold: 30    # wait up to 165s for JVM startup
+
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8080
+            initialDelaySeconds: 0
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: 8080
+            initialDelaySeconds: 0
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+            successThreshold: 1
+
+          # Graceful shutdown
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sh", "-c", "sleep 10"]
+
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "500m"
+              memory: "1Gi"
+
+      terminationGracePeriodSeconds: 60
+
+---
+# ------------------------------------------------------------
+# Common probe troubleshooting commands
+# ------------------------------------------------------------
+# View probe events and failure reasons:
+#   kubectl describe pod httpget-probe-demo
+#   # Look for "Liveness probe failed" or "Readiness probe failed" in Events
+#
+# Check pod probe status:
+#   kubectl get pod httpget-probe-demo -o jsonpath='{.status.conditions}'
+#
+# View readiness status (shows if pod is in service endpoints):
+#   kubectl get pod httpget-probe-demo
+#   # READY column: 1/1 means ready; 0/1 means not ready
+#
+# Manually test the probe endpoint:
+#   kubectl exec httpget-probe-demo -- wget -qO- http://localhost:80/healthz
+#   kubectl exec exec-probe-demo -c mysql -- mysqladmin ping

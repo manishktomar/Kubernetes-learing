@@ -1,0 +1,283 @@
+# ============================================================
+# Kubernetes Namespace - Learning Reference
+# ============================================================
+# A Namespace provides a mechanism for isolating groups of
+# resources within a single cluster.
+#
+# Key concepts:
+#   - Resource isolation: Pods, Services, Deployments are namespace-scoped
+#   - ResourceQuota: limits total resource usage in a namespace
+#   - LimitRange:    sets default/min/max per-container resource constraints
+#   - NetworkPolicy: controls traffic between namespaces/pods
+#
+# Built-in namespaces:
+#   default        – default namespace for user workloads
+#   kube-system    – Kubernetes system components
+#   kube-public    – publicly readable cluster info
+#   kube-node-lease– node heartbeat leases
+# ============================================================
+
+
+# ------------------------------------------------------------
+# 1. Simple Namespace
+# ------------------------------------------------------------
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: development
+  labels:
+    environment: dev
+    team: backend
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: staging
+  labels:
+    environment: staging
+    team: backend
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: production
+  labels:
+    environment: production
+    team: backend
+  annotations:
+    # Protect production namespace from accidental deletion
+    # (annotation is informational; tools like Helm respect it)
+    "helm.sh/resource-policy": keep
+
+---
+# ------------------------------------------------------------
+# 2. ResourceQuota – limit total resources in development ns
+#    Prevents a single namespace from consuming all cluster resources.
+# ------------------------------------------------------------
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: dev-quota
+  namespace: development
+spec:
+  hard:
+    # Compute resources
+    requests.cpu: "4"            # total CPU requests ≤ 4 cores
+    requests.memory: "8Gi"       # total memory requests ≤ 8 GiB
+    limits.cpu: "8"
+    limits.memory: "16Gi"
+
+    # Object count limits
+    pods: "20"                   # max 20 pods
+    services: "10"
+    persistentvolumeclaims: "10"
+    secrets: "20"
+    configmaps: "20"
+    replicationcontrollers: "0"  # disallow RC (use Deployments instead)
+
+    # Storage limits
+    requests.storage: "50Gi"     # total PVC storage requests
+    "standard.storageclass.storage.k8s.io/requests.storage": "30Gi"
+
+---
+# Stricter quota for production
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: prod-quota
+  namespace: production
+spec:
+  hard:
+    requests.cpu: "20"
+    requests.memory: "40Gi"
+    limits.cpu: "40"
+    limits.memory: "80Gi"
+    pods: "100"
+    services: "50"
+    persistentvolumeclaims: "50"
+    requests.storage: "500Gi"
+
+---
+# ------------------------------------------------------------
+# 3. LimitRange – set per-container default / min / max
+#    Applied when a container does NOT specify resource requests/limits.
+# ------------------------------------------------------------
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: dev-limits
+  namespace: development
+spec:
+  limits:
+    # Container-level limits
+    - type: Container
+      default:                   # applied when no limit is specified
+        cpu: "250m"
+        memory: "256Mi"
+      defaultRequest:            # applied when no request is specified
+        cpu: "100m"
+        memory: "128Mi"
+      max:                       # hard ceiling per container
+        cpu: "2"
+        memory: "2Gi"
+      min:                       # hard floor per container
+        cpu: "50m"
+        memory: "64Mi"
+
+    # Pod-level limit (sum of all containers)
+    - type: Pod
+      max:
+        cpu: "4"
+        memory: "4Gi"
+
+    # PVC-level limit
+    - type: PersistentVolumeClaim
+      max:
+        storage: "10Gi"
+      min:
+        storage: "1Gi"
+
+---
+# ------------------------------------------------------------
+# 4. NetworkPolicy – restrict traffic between namespaces
+#
+#    By default, all pods in a cluster can talk to each other.
+#    NetworkPolicy lets you restrict this.
+#
+#    IMPORTANT: Requires a CNI plugin that supports NetworkPolicy
+#    (Calico, Cilium, Weave, etc.).  Flannel alone does NOT enforce them.
+# ------------------------------------------------------------
+
+# Deny all ingress by default in production
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deny-all-ingress
+  namespace: production
+spec:
+  podSelector: {}               # applies to ALL pods in the namespace
+  policyTypes:
+    - Ingress
+  # No ingress rules → all ingress is denied
+
+---
+# Allow ingress to backend pods only from frontend pods in the same namespace
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-frontend-to-backend
+  namespace: production
+spec:
+  podSelector:
+    matchLabels:
+      tier: backend             # policy applies to backend pods
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        # Allow from pods in the same namespace labelled tier=frontend
+        - podSelector:
+            matchLabels:
+              tier: frontend
+        # Also allow from the monitoring namespace
+        - namespaceSelector:
+            matchLabels:
+              environment: monitoring
+      ports:
+        - protocol: TCP
+          port: 8080
+
+---
+# Allow ingress from the staging namespace to development namespace
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-from-staging
+  namespace: development
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              environment: staging
+
+---
+# ------------------------------------------------------------
+# 5. ServiceAccount – namespace-scoped identity for pods
+# ------------------------------------------------------------
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: backend-sa
+  namespace: production
+  labels:
+    app: backend
+automountServiceAccountToken: false   # opt-in per pod for security
+
+---
+# ------------------------------------------------------------
+# 6. Sample Deployment that uses the namespace + SA above
+# ------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: production
+  labels:
+    app: backend
+    tier: backend
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: backend
+      tier: backend
+  template:
+    metadata:
+      labels:
+        app: backend
+        tier: backend
+    spec:
+      serviceAccountName: backend-sa
+      automountServiceAccountToken: false
+      containers:
+        - name: backend
+          image: my-backend:1.0.0
+          ports:
+            - containerPort: 8080
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+
+---
+# ------------------------------------------------------------
+# Useful kubectl commands for Namespaces
+# ------------------------------------------------------------
+# kubectl apply -f Namespace.yaml
+# kubectl get namespaces
+# kubectl describe namespace development
+#
+# Work within a specific namespace:
+#   kubectl get pods -n development
+#   kubectl get all -n production
+#
+# Set a default namespace for your current context:
+#   kubectl config set-context --current --namespace=development
+#
+# View ResourceQuota usage:
+#   kubectl describe resourcequota dev-quota -n development
+#
+# View LimitRange:
+#   kubectl describe limitrange dev-limits -n development
+#
+# Delete a namespace (deletes ALL resources inside it):
+#   kubectl delete namespace development

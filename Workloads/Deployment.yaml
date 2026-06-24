@@ -1,0 +1,361 @@
+# ============================================================
+# Kubernetes Deployment - Learning Reference
+# ============================================================
+# A Deployment manages a ReplicaSet and provides declarative
+# updates for Pods. It is the standard way to run stateless
+# workloads (web servers, APIs, microservices).
+#
+# Key concepts:
+#   - Desired state: spec.replicas
+#   - Pod template:  spec.template
+#   - Update strategy: RollingUpdate (default) or Recreate
+#   - Rollback:  kubectl rollout undo deployment/<name>
+#   - History:   kubectl rollout history deployment/<name>
+# ============================================================
+
+
+# ------------------------------------------------------------
+# 1. Basic Deployment
+# ------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-basic
+  namespace: default
+  labels:
+    app: nginx
+    tier: frontend
+  annotations:
+    description: "Basic nginx deployment for learning"
+spec:
+  replicas: 3                        # number of desired pod replicas
+  selector:
+    matchLabels:
+      app: nginx                     # must match spec.template.metadata.labels
+  template:
+    metadata:
+      labels:
+        app: nginx
+        tier: frontend
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:1.25.3        # always pin image versions in production
+          ports:
+            - name: http
+              containerPort: 80
+              protocol: TCP
+          resources:
+            requests:
+              cpu: "100m"            # 0.1 CPU core
+              memory: "128Mi"
+            limits:
+              cpu: "250m"
+              memory: "256Mi"
+          # Liveness probe – restarts the container if it fails
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            failureThreshold: 3
+          # Readiness probe – removes pod from Service endpoints if it fails
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+
+---
+# ------------------------------------------------------------
+# 2. Deployment with RollingUpdate Strategy (explicit)
+#    Default strategy; ensures zero-downtime updates.
+# ------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-rolling-update
+  namespace: default
+  labels:
+    app: nginx-rolling
+spec:
+  replicas: 4
+  selector:
+    matchLabels:
+      app: nginx-rolling
+  # RollingUpdate gradually replaces old pods with new ones.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1          # max number of pods ABOVE desired count during update
+      maxUnavailable: 1    # max number of pods that can be unavailable during update
+  template:
+    metadata:
+      labels:
+        app: nginx-rolling
+    spec:
+      # terminationGracePeriodSeconds gives the container time to finish requests
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: nginx
+          image: nginx:1.25.3
+          ports:
+            - containerPort: 80
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "250m"
+              memory: "256Mi"
+          # Lifecycle hooks for graceful shutdown
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep 5"]
+
+---
+# ------------------------------------------------------------
+# 3. Deployment with Recreate Strategy
+#    Kills ALL old pods before creating new ones.
+#    Use when the app cannot run multiple versions simultaneously.
+# ------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-recreate
+  namespace: default
+  labels:
+    app: nginx-recreate
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: nginx-recreate
+  strategy:
+    type: Recreate             # no maxSurge / maxUnavailable with Recreate
+  template:
+    metadata:
+      labels:
+        app: nginx-recreate
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:1.25.3
+          ports:
+            - containerPort: 80
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "250m"
+              memory: "256Mi"
+
+---
+# ------------------------------------------------------------
+# 4. Deployment with Environment Variables & ConfigMap / Secret refs
+# ------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app-with-config
+  namespace: default
+  labels:
+    app: my-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: my-app
+  template:
+    metadata:
+      labels:
+        app: my-app
+    spec:
+      containers:
+        - name: my-app
+          image: busybox:1.36
+          command: ["sh", "-c", "env && sleep 3600"]
+          env:
+            # Hardcoded environment variable
+            - name: APP_ENV
+              value: "production"
+            # Value pulled from a ConfigMap key
+            - name: APP_CONFIG_VALUE
+              valueFrom:
+                configMapKeyRef:
+                  name: my-configmap      # must exist in the namespace
+                  key: config-key
+            # Value pulled from a Secret key
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: my-secret         # must exist in the namespace
+                  key: db-password
+          # Load all keys of a ConfigMap as environment variables
+          envFrom:
+            - configMapRef:
+                name: my-configmap
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "100m"
+              memory: "128Mi"
+
+---
+# ------------------------------------------------------------
+# 5. Deployment with Node Affinity & Pod Anti-Affinity
+#    Spread pods across nodes/zones for high availability.
+# ------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-ha
+  namespace: default
+  labels:
+    app: nginx-ha
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: nginx-ha
+  template:
+    metadata:
+      labels:
+        app: nginx-ha
+    spec:
+      affinity:
+        # Prefer nodes with label zone=us-east-1a
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 1
+              preference:
+                matchExpressions:
+                  - key: topology.kubernetes.io/zone
+                    operator: In
+                    values:
+                      - us-east-1a
+                      - us-east-1b
+        # Hard rule: do NOT schedule two pods with the same app label on the same node
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchExpressions:
+                  - key: app
+                    operator: In
+                    values:
+                      - nginx-ha
+              topologyKey: kubernetes.io/hostname
+      containers:
+        - name: nginx
+          image: nginx:1.25.3
+          ports:
+            - containerPort: 80
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "250m"
+              memory: "256Mi"
+
+---
+# ------------------------------------------------------------
+# 6. Deployment – Canary Release Pattern
+#    Run a small percentage of traffic on the new version
+#    by deploying a second Deployment with fewer replicas
+#    sharing the same Service selector label.
+#
+#    stable:  app=my-service  (9 replicas  → ~90 % traffic)
+#    canary:  app=my-service  (1 replica   → ~10 % traffic)
+# ------------------------------------------------------------
+
+# --- Stable version ---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-service-stable
+  namespace: default
+  labels:
+    app: my-service
+    track: stable
+spec:
+  replicas: 9
+  selector:
+    matchLabels:
+      app: my-service
+      track: stable
+  template:
+    metadata:
+      labels:
+        app: my-service    # shared label used by the Service
+        track: stable
+    spec:
+      containers:
+        - name: my-service
+          image: my-service:v1.0.0
+          ports:
+            - containerPort: 8080
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "200m"
+              memory: "256Mi"
+
+---
+# --- Canary version ---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-service-canary
+  namespace: default
+  labels:
+    app: my-service
+    track: canary
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: my-service
+      track: canary
+  template:
+    metadata:
+      labels:
+        app: my-service    # same shared label → Service routes ~10 % here
+        track: canary
+    spec:
+      containers:
+        - name: my-service
+          image: my-service:v2.0.0     # new version under test
+          ports:
+            - containerPort: 8080
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "200m"
+              memory: "256Mi"
+
+---
+# ------------------------------------------------------------
+# Useful kubectl commands for Deployments
+# ------------------------------------------------------------
+# kubectl apply -f Deployment.yaml
+# kubectl get deployments
+# kubectl describe deployment nginx-basic
+# kubectl rollout status deployment/nginx-basic
+# kubectl rollout history deployment/nginx-basic
+# kubectl rollout undo deployment/nginx-basic                    # rollback to previous
+# kubectl rollout undo deployment/nginx-basic --to-revision=2   # rollback to revision 2
+# kubectl scale deployment nginx-basic --replicas=5
+# kubectl set image deployment/nginx-basic nginx=nginx:1.26.0   # trigger update
+# kubectl delete deployment nginx-basic

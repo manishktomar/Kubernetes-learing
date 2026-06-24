@@ -1,0 +1,346 @@
+# ============================================================
+# Kubernetes StatefulSet - Learning Reference
+# ============================================================
+# StatefulSet manages stateful applications that need:
+#   - Stable, unique network identities (pod-0, pod-1, …)
+#   - Stable, persistent storage per pod
+#   - Ordered, graceful deployment and scaling
+#   - Ordered, automated rolling updates
+#
+# Differences from Deployment:
+#   - Pods get predictable names: <name>-0, <name>-1, …
+#   - Each pod gets its own PVC (via volumeClaimTemplates)
+#   - Pods start/stop in order (0 → N on scale-up, N → 0 on scale-down)
+#
+# Requires a Headless Service (clusterIP: None) for DNS-based discovery.
+# DNS pattern: <pod-name>.<headless-svc>.<namespace>.svc.cluster.local
+# ============================================================
+
+
+# ------------------------------------------------------------
+# 1. Headless Service (required for StatefulSet DNS)
+# ------------------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql-headless
+  namespace: default
+  labels:
+    app: mysql
+spec:
+  clusterIP: None               # makes it a Headless Service
+  selector:
+    app: mysql
+  ports:
+    - name: mysql
+      port: 3306
+      targetPort: 3306
+
+---
+# ------------------------------------------------------------
+# 2. Basic StatefulSet – MySQL single-node
+# ------------------------------------------------------------
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: mysql
+  namespace: default
+  labels:
+    app: mysql
+spec:
+  serviceName: mysql-headless   # must match the Headless Service name
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mysql
+  # Ordered rolling updates (default)
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      partition: 0              # update all pods; set to N to do a canary update
+  # podManagementPolicy: OrderedReady  # default: wait for each pod to be Ready before next
+  # podManagementPolicy: Parallel       # start/stop all pods simultaneously
+  template:
+    metadata:
+      labels:
+        app: mysql
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: mysql
+          image: mysql:8.0.36
+          ports:
+            - name: mysql
+              containerPort: 3306
+          env:
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mysql-secret      # create this Secret separately
+                  key: root-password
+            - name: MYSQL_DATABASE
+              value: "appdb"
+          volumeMounts:
+            - name: mysql-data
+              mountPath: /var/lib/mysql   # MySQL data directory
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "500m"
+              memory: "1Gi"
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - "mysqladmin ping -u root -p${MYSQL_ROOT_PASSWORD}"
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - "mysql -u root -p${MYSQL_ROOT_PASSWORD} -e 'SELECT 1'"
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 3
+  # volumeClaimTemplates: each pod gets its own PVC automatically
+  volumeClaimTemplates:
+    - metadata:
+        name: mysql-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: "standard"    # change to match your StorageClass
+        resources:
+          requests:
+            storage: 10Gi
+
+---
+# ------------------------------------------------------------
+# 3. Headless Service for ZooKeeper cluster
+# ------------------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: zookeeper-headless
+  namespace: default
+  labels:
+    app: zookeeper
+spec:
+  clusterIP: None
+  selector:
+    app: zookeeper
+  ports:
+    - name: client
+      port: 2181
+    - name: follower
+      port: 2888
+    - name: election
+      port: 3888
+
+---
+# Regular Service for client access
+apiVersion: v1
+kind: Service
+metadata:
+  name: zookeeper
+  namespace: default
+  labels:
+    app: zookeeper
+spec:
+  selector:
+    app: zookeeper
+  ports:
+    - name: client
+      port: 2181
+      targetPort: 2181
+
+---
+# ------------------------------------------------------------
+# 4. StatefulSet – ZooKeeper 3-node cluster
+#    Demonstrates multi-replica StatefulSet with ordered startup.
+#    Pod DNS:
+#      zookeeper-0.zookeeper-headless.default.svc.cluster.local
+#      zookeeper-1.zookeeper-headless.default.svc.cluster.local
+#      zookeeper-2.zookeeper-headless.default.svc.cluster.local
+# ------------------------------------------------------------
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: zookeeper
+  namespace: default
+  labels:
+    app: zookeeper
+spec:
+  serviceName: zookeeper-headless
+  replicas: 3
+  selector:
+    matchLabels:
+      app: zookeeper
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      partition: 0
+  template:
+    metadata:
+      labels:
+        app: zookeeper
+    spec:
+      affinity:
+        # Spread pods across nodes for HA
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchExpressions:
+                  - key: app
+                    operator: In
+                    values: [zookeeper]
+              topologyKey: kubernetes.io/hostname
+      containers:
+        - name: zookeeper
+          image: bitnami/zookeeper:3.9.1
+          ports:
+            - name: client
+              containerPort: 2181
+            - name: follower
+              containerPort: 2888
+            - name: election
+              containerPort: 3888
+          env:
+            - name: ALLOW_ANONYMOUS_LOGIN
+              value: "yes"
+            - name: ZOO_SERVERS
+              # references sibling pods by their stable DNS names
+              value: >-
+                server.1=zookeeper-0.zookeeper-headless.default.svc.cluster.local:2888:3888
+                server.2=zookeeper-1.zookeeper-headless.default.svc.cluster.local:2888:3888
+                server.3=zookeeper-2.zookeeper-headless.default.svc.cluster.local:2888:3888
+            # Inject the pod's ordinal index as the ZK myid
+            - name: ZOO_MY_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name   # "zookeeper-0" → parsed in entrypoint
+          volumeMounts:
+            - name: zk-data
+              mountPath: /bitnami/zookeeper
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "500m"
+              memory: "1Gi"
+          readinessProbe:
+            exec:
+              command: ["zkServer.sh", "status"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["zkServer.sh", "status"]
+            initialDelaySeconds: 30
+            periodSeconds: 20
+      securityContext:
+        fsGroup: 1001              # bitnami images run as non-root user 1001
+  volumeClaimTemplates:
+    - metadata:
+        name: zk-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: "standard"
+        resources:
+          requests:
+            storage: 5Gi
+
+---
+# ------------------------------------------------------------
+# 5. StatefulSet – OnDelete update strategy
+#    Pods are only updated when manually deleted.
+#    Useful when you need full control over the update order.
+# ------------------------------------------------------------
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis-ondelete
+  namespace: default
+  labels:
+    app: redis-ondelete
+spec:
+  serviceName: redis-headless
+  replicas: 3
+  selector:
+    matchLabels:
+      app: redis-ondelete
+  updateStrategy:
+    type: OnDelete         # pods update ONLY when you delete them manually
+  template:
+    metadata:
+      labels:
+        app: redis-ondelete
+    spec:
+      containers:
+        - name: redis
+          image: redis:7.2.4-alpine
+          command: ["redis-server", "--appendonly", "yes"]
+          ports:
+            - name: redis
+              containerPort: 6379
+          volumeMounts:
+            - name: redis-data
+              mountPath: /data
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "250m"
+              memory: "256Mi"
+          livenessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+  volumeClaimTemplates:
+    - metadata:
+        name: redis-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: "standard"
+        resources:
+          requests:
+            storage: 2Gi
+
+---
+# ------------------------------------------------------------
+# Useful kubectl commands for StatefulSets
+# ------------------------------------------------------------
+# kubectl apply -f StatefulSet.yaml
+# kubectl get statefulsets
+# kubectl describe statefulset mysql
+# kubectl get pods -l app=mysql
+#
+# Access a specific pod by stable DNS inside the cluster:
+#   nslookup mysql-0.mysql-headless.default.svc.cluster.local
+#
+# Scale:
+#   kubectl scale statefulset zookeeper --replicas=5
+#
+# Ordered rolling update (partition canary – only pods >= 2 update):
+#   kubectl patch statefulset zookeeper -p '{"spec":{"updateStrategy":{"rollingUpdate":{"partition":2}}}}'
+#
+# OnDelete update – manually delete pod to trigger update:
+#   kubectl delete pod redis-ondelete-2
+#
+# Delete StatefulSet (retain PVCs):
+#   kubectl delete statefulset mysql
+# Delete PVCs (data will be lost):
+#   kubectl delete pvc mysql-data-mysql-0

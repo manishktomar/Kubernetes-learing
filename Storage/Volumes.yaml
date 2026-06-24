@@ -1,0 +1,353 @@
+# ============================================================
+# Kubernetes Volumes - Learning Reference
+# ============================================================
+# A Volume gives containers in a Pod access to storage.
+# Unlike a container's filesystem, volumes outlive container
+# restarts (within the same pod lifetime).
+#
+# Built-in volume types covered here:
+#   emptyDir      – temporary scratch space; deleted when pod dies
+#   hostPath      – mounts a file/dir from the node; use with care
+#   configMap     – mount ConfigMap keys as files
+#   secret        – mount Secret keys as files
+#   projected     – combine multiple sources into one volume
+#   downwardAPI   – expose Pod/container metadata as files/env
+#   nfs           – mount a NFS share
+#
+# For persistent storage across pod restarts use:
+#   PersistentVolumeClaim (see PVC.yaml)
+# ============================================================
+
+
+# ------------------------------------------------------------
+# 1. emptyDir – ephemeral shared volume (deleted with pod)
+#    Useful for: caching, sharing files between containers,
+#    sidecar log shipping, init-container data passing.
+# ------------------------------------------------------------
+apiVersion: v1
+kind: Pod
+metadata:
+  name: emptydir-demo
+  namespace: default
+spec:
+  containers:
+    - name: writer
+      image: busybox:1.36
+      command: ["sh", "-c", "while true; do date >> /data/log.txt; sleep 5; done"]
+      volumeMounts:
+        - name: shared-data
+          mountPath: /data
+      resources:
+        requests:
+          cpu: "50m"
+          memory: "32Mi"
+        limits:
+          cpu: "100m"
+          memory: "64Mi"
+
+    - name: reader
+      image: busybox:1.36
+      command: ["sh", "-c", "tail -f /data/log.txt"]
+      volumeMounts:
+        - name: shared-data
+          mountPath: /data
+          readOnly: true
+      resources:
+        requests:
+          cpu: "50m"
+          memory: "32Mi"
+        limits:
+          cpu: "100m"
+          memory: "64Mi"
+
+  volumes:
+    - name: shared-data
+      emptyDir: {}              # stored on node disk by default
+      # emptyDir:
+      #   medium: Memory        # store in RAM (tmpfs) – faster but counts toward memory limit
+      #   sizeLimit: 500Mi      # evicted if size exceeded
+
+---
+# ------------------------------------------------------------
+# 2. hostPath – mount a file or directory from the NODE
+#    Use only for DaemonSets or node-level access.
+#    SECURITY RISK: gives pod access to node filesystem.
+# ------------------------------------------------------------
+apiVersion: v1
+kind: Pod
+metadata:
+  name: hostpath-demo
+  namespace: default
+spec:
+  containers:
+    - name: log-reader
+      image: busybox:1.36
+      command: ["sh", "-c", "ls /var/log/pods && sleep 3600"]
+      volumeMounts:
+        - name: pod-logs
+          mountPath: /var/log/pods
+          readOnly: true
+      resources:
+        requests:
+          cpu: "50m"
+          memory: "32Mi"
+        limits:
+          cpu: "100m"
+          memory: "64Mi"
+
+  volumes:
+    - name: pod-logs
+      hostPath:
+        path: /var/log/pods       # node path
+        # type options:
+        #   ""                – no check (default)
+        #   Directory         – must be an existing directory
+        #   DirectoryOrCreate – creates dir if it doesn't exist
+        #   File              – must be an existing file
+        #   FileOrCreate      – creates file if it doesn't exist
+        #   Socket            – must be a UNIX socket
+        #   CharDevice        – must be a character device
+        #   BlockDevice       – must be a block device
+        type: Directory
+
+---
+# ------------------------------------------------------------
+# 3. ConfigMap volume – mount ConfigMap as files
+# ------------------------------------------------------------
+apiVersion: v1
+kind: Pod
+metadata:
+  name: configmap-volume-demo
+  namespace: default
+spec:
+  containers:
+    - name: nginx
+      image: nginx:1.25.3
+      volumeMounts:
+        # Mount all ConfigMap keys as files in /etc/nginx/conf.d
+        - name: nginx-conf
+          mountPath: /etc/nginx/conf.d
+          readOnly: true
+      resources:
+        requests:
+          cpu: "100m"
+          memory: "128Mi"
+        limits:
+          cpu: "250m"
+          memory: "256Mi"
+
+  volumes:
+    - name: nginx-conf
+      configMap:
+        name: nginx-config        # must exist in namespace
+        defaultMode: 0644
+        items:
+          - key: nginx.conf
+            path: nginx.conf
+
+---
+# ------------------------------------------------------------
+# 4. Secret volume – mount Secret keys as files
+#    Best practice: readOnly + restrictive defaultMode
+# ------------------------------------------------------------
+apiVersion: v1
+kind: Pod
+metadata:
+  name: secret-volume-demo
+  namespace: default
+spec:
+  containers:
+    - name: app
+      image: busybox:1.36
+      command: ["cat", "/etc/secret/password"]
+      volumeMounts:
+        - name: db-creds
+          mountPath: /etc/secret
+          readOnly: true
+      resources:
+        requests:
+          cpu: "50m"
+          memory: "32Mi"
+        limits:
+          cpu: "100m"
+          memory: "64Mi"
+
+  volumes:
+    - name: db-creds
+      secret:
+        secretName: db-secret
+        defaultMode: 0400         # owner read-only
+
+---
+# ------------------------------------------------------------
+# 5. Projected volume – combine multiple sources into one
+#    Supports: secret, configMap, serviceAccountToken, downwardAPI
+# ------------------------------------------------------------
+apiVersion: v1
+kind: Pod
+metadata:
+  name: projected-volume-demo
+  namespace: default
+spec:
+  containers:
+    - name: app
+      image: busybox:1.36
+      command: ["ls", "/projected", "&&", "sleep", "3600"]
+      volumeMounts:
+        - name: all-in-one
+          mountPath: /projected
+          readOnly: true
+      resources:
+        requests:
+          cpu: "50m"
+          memory: "32Mi"
+        limits:
+          cpu: "100m"
+          memory: "64Mi"
+
+  volumes:
+    - name: all-in-one
+      projected:
+        defaultMode: 0444
+        sources:
+          - secret:
+              name: db-secret
+              items:
+                - key: password
+                  path: db-password
+          - configMap:
+              name: app-config
+              items:
+                - key: APP_ENV
+                  path: app-env
+          - serviceAccountToken:
+              path: token
+              expirationSeconds: 3600
+              audience: my-app
+          - downwardAPI:
+              items:
+                - path: pod-name
+                  fieldRef:
+                    fieldPath: metadata.name
+
+---
+# ------------------------------------------------------------
+# 6. Downward API – expose pod/container metadata to the app
+#    Two modes:  environment variables  or  volume files
+# ------------------------------------------------------------
+apiVersion: v1
+kind: Pod
+metadata:
+  name: downwardapi-demo
+  namespace: default
+  labels:
+    app: my-app
+    version: "1.0.0"
+spec:
+  containers:
+    - name: app
+      image: busybox:1.36
+      command: ["env"]
+      env:
+        # Pod metadata via env vars
+        - name: MY_POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: MY_POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: MY_POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        - name: MY_NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        # Container resource info
+        - name: MY_CPU_REQUEST
+          valueFrom:
+            resourceFieldRef:
+              containerName: app
+              resource: requests.cpu
+        - name: MY_MEM_LIMIT
+          valueFrom:
+            resourceFieldRef:
+              containerName: app
+              resource: limits.memory
+      volumeMounts:
+        - name: meta-vol
+          mountPath: /etc/meta
+          readOnly: true
+      resources:
+        requests:
+          cpu: "50m"
+          memory: "32Mi"
+        limits:
+          cpu: "100m"
+          memory: "64Mi"
+
+  volumes:
+    - name: meta-vol
+      downwardAPI:
+        items:
+          - path: labels           # /etc/meta/labels
+            fieldRef:
+              fieldPath: metadata.labels
+          - path: annotations      # /etc/meta/annotations
+            fieldRef:
+              fieldPath: metadata.annotations
+          - path: cpu-request
+            resourceFieldRef:
+              containerName: app
+              resource: requests.cpu
+
+---
+# ------------------------------------------------------------
+# 7. NFS volume
+#    Requires an NFS server accessible from cluster nodes.
+# ------------------------------------------------------------
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nfs-demo
+  namespace: default
+spec:
+  containers:
+    - name: app
+      image: busybox:1.36
+      command: ["ls", "/mnt/nfs"]
+      volumeMounts:
+        - name: nfs-vol
+          mountPath: /mnt/nfs
+      resources:
+        requests:
+          cpu: "50m"
+          memory: "32Mi"
+        limits:
+          cpu: "100m"
+          memory: "64Mi"
+
+  volumes:
+    - name: nfs-vol
+      nfs:
+        server: nfs-server.example.com   # NFS server hostname/IP
+        path: /exports/mydata
+        readOnly: false
+
+---
+# ------------------------------------------------------------
+# Useful kubectl commands for Volumes
+# ------------------------------------------------------------
+# Describe a pod to see volumes and mounts:
+#   kubectl describe pod emptydir-demo
+#
+# Exec into a container to inspect mounted files:
+#   kubectl exec emptydir-demo -c reader -- ls /data
+#   kubectl exec secret-volume-demo -- cat /etc/secret/password
+#
+# Check downward API values:
+#   kubectl exec downwardapi-demo -- env | grep MY_
+#   kubectl exec downwardapi-demo -- cat /etc/meta/labels

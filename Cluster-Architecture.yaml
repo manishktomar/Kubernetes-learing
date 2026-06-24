@@ -1,0 +1,319 @@
+# ============================================================
+# Kubernetes Cluster Architecture - Learning Reference
+# ============================================================
+# A Kubernetes cluster consists of:
+#   1. Control Plane  – the brain; manages cluster state
+#   2. Worker Nodes   – where your workloads actually run
+#   3. Add-ons        – optional but common cluster features
+# ============================================================
+
+
+# ============================================================
+# CONTROL PLANE COMPONENTS
+# ============================================================
+# The control plane makes global decisions about the cluster
+# (scheduling, detecting/responding to cluster events).
+# Typically runs on dedicated master nodes (3 for HA).
+
+controlPlane:
+
+  # ----------------------------------------------------------
+  # kube-apiserver
+  # ----------------------------------------------------------
+  # The front-end of the Kubernetes control plane.
+  # Exposes the Kubernetes API (REST).
+  # ALL communication (kubectl, controllers, nodes) goes through it.
+  # Horizontally scalable – run multiple instances for HA.
+  #
+  # Key responsibilities:
+  #   - Authentication & Authorization (RBAC)
+  #   - Admission control (validation, mutation)
+  #   - Stores state in etcd
+  #
+  # Port: 6443 (HTTPS)
+  kubeApiServer:
+    image: registry.k8s.io/kube-apiserver:v1.29.0
+    flags:
+      - "--etcd-servers=https://127.0.0.1:2379"
+      - "--service-cluster-ip-range=10.96.0.0/16"
+      - "--authorization-mode=Node,RBAC"
+      - "--enable-admission-plugins=NodeRestriction"
+
+  # ----------------------------------------------------------
+  # etcd
+  # ----------------------------------------------------------
+  # Consistent and highly-available key-value store.
+  # The single source of truth for all cluster state.
+  # Only the API server talks to etcd directly.
+  #
+  # Key facts:
+  #   - Raft consensus algorithm (majority quorum needed)
+  #   - Recommended: 3 or 5 etcd members for HA
+  #   - BACKUP etcd regularly – losing it = losing all cluster state
+  #
+  # Port: 2379 (client), 2380 (peer)
+  etcd:
+    image: registry.k8s.io/etcd:3.5.10-0
+    backupCommand: >
+      etcdctl snapshot save /backup/etcd-snapshot.db
+      --endpoints=https://127.0.0.1:2379
+      --cacert=/etc/kubernetes/pki/etcd/ca.crt
+      --cert=/etc/kubernetes/pki/etcd/healthcheck-client.crt
+      --key=/etc/kubernetes/pki/etcd/healthcheck-client.key
+
+  # ----------------------------------------------------------
+  # kube-scheduler
+  # ----------------------------------------------------------
+  # Watches for newly created Pods with no assigned node and
+  # selects a node for them to run on.
+  #
+  # Scheduling factors:
+  #   - Resource requirements (requests/limits)
+  #   - Node affinity / anti-affinity
+  #   - Taints & tolerations
+  #   - Pod topology spread constraints
+  #   - Node selector
+  #   - Available resources on nodes
+  #
+  # Port: 10259 (HTTPS)
+  kubeScheduler:
+    image: registry.k8s.io/kube-scheduler:v1.29.0
+    schedulingProfiles:
+      - pluginConfig:
+          - name: DefaultPreemption
+            args:
+              minCandidateNodesPercentage: 10
+              minCandidateNodesAbsolute: 100
+
+  # ----------------------------------------------------------
+  # kube-controller-manager
+  # ----------------------------------------------------------
+  # Runs controller loops that regulate the state of the cluster.
+  # Each controller is a separate goroutine compiled into one binary.
+  #
+  # Built-in controllers include:
+  #   - Node controller        – notices and responds to node failures
+  #   - Job controller         – watches Job objects, creates pods
+  #   - Endpoint controller    – links Services and Pods
+  #   - ServiceAccount controller – creates default SAs for namespaces
+  #   - ReplicaSet controller  – maintains correct number of pod replicas
+  #   - Deployment controller  – manages ReplicaSet rollovers
+  #
+  # Port: 10257 (HTTPS)
+  kubeControllerManager:
+    image: registry.k8s.io/kube-controller-manager:v1.29.0
+
+  # ----------------------------------------------------------
+  # cloud-controller-manager
+  # ----------------------------------------------------------
+  # Separates cloud-specific control logic from core k8s.
+  # Only runs if the cluster is on a cloud provider.
+  #
+  # Cloud controllers:
+  #   - Node controller    – checks cloud API for deleted node instances
+  #   - Route controller   – sets up cloud network routes
+  #   - Service controller – creates/updates/deletes cloud load balancers
+  cloudControllerManager:
+    image: registry.k8s.io/cloud-controller-manager:v1.29.0
+    # Each cloud has its own implementation:
+    #   AWS:   cloud-controller-manager (from amazon/aws-cloud-controller-manager)
+    #   Azure: cloud-controller-manager (from mcr.microsoft.com/oss/kubernetes/azure-cloud-controller-manager)
+    #   GKE:   managed by Google
+
+
+# ============================================================
+# NODE (WORKER) COMPONENTS
+# ============================================================
+# Each node runs these components to maintain running pods
+# and provide the Kubernetes runtime environment.
+
+node:
+
+  # ----------------------------------------------------------
+  # kubelet
+  # ----------------------------------------------------------
+  # The primary node agent. Communicates with the API server.
+  # Ensures containers described in PodSpecs are running and healthy.
+  #
+  # Key responsibilities:
+  #   - Watch API server for Pods assigned to its node
+  #   - Start/stop containers via Container Runtime Interface (CRI)
+  #   - Run liveness/readiness/startup probes
+  #   - Report node and pod status back to API server
+  #   - Mount volumes
+  #   - Garbage collect unused images and containers
+  #
+  # Note: Does NOT manage containers not created by Kubernetes.
+  #
+  # Port: 10250 (HTTPS)
+  kubelet:
+    configFile: /var/lib/kubelet/config.yaml
+    cgroupDriver: systemd         # must match container runtime (containerd)
+    containerRuntimeEndpoint: unix:///var/run/containerd/containerd.sock
+
+  # ----------------------------------------------------------
+  # kube-proxy
+  # ----------------------------------------------------------
+  # Runs on each node and maintains network rules for Services.
+  # Implements the Service abstraction (ClusterIP / NodePort).
+  #
+  # Two modes:
+  #   iptables – default; scales to ~5000 nodes
+  #   IPVS     – better performance; scales to 10,000+ nodes
+  #
+  # For large clusters or with service meshes (Istio, Cilium),
+  # kube-proxy may be replaced by the CNI plugin directly.
+  kubeProxy:
+    image: registry.k8s.io/kube-proxy:v1.29.0
+    mode: iptables     # or: ipvs
+
+  # ----------------------------------------------------------
+  # Container Runtime
+  # ----------------------------------------------------------
+  # The software that runs containers. Kubernetes uses the
+  # Container Runtime Interface (CRI) to communicate with it.
+  #
+  # Supported runtimes:
+  #   containerd  – default (used by most distros and cloud providers)
+  #   CRI-O       – OCI-compliant; used by OpenShift
+  #   Docker      – no longer supported as CRI in k8s 1.24+
+  #
+  # containerd uses runc (OCI runtime) to actually run containers.
+  containerRuntime:
+    type: containerd
+    socket: /var/run/containerd/containerd.sock
+
+
+# ============================================================
+# ADD-ONS
+# ============================================================
+# Add-ons extend Kubernetes functionality.
+# They run inside the cluster as Pods/Deployments in kube-system.
+
+addons:
+
+  # ----------------------------------------------------------
+  # DNS – CoreDNS (mandatory for service discovery)
+  # ----------------------------------------------------------
+  # Provides DNS-based service discovery.
+  # Every pod gets CoreDNS as its nameserver.
+  # Default DNS: svc.cluster.local
+  coreDNS:
+    image: registry.k8s.io/coredns/coredns:v1.11.1
+    replicas: 2
+
+  # ----------------------------------------------------------
+  # CNI Plugin (mandatory – provides pod networking)
+  # ----------------------------------------------------------
+  # Implements the Container Network Interface; gives each pod
+  # an IP address and enables pod-to-pod communication.
+  #
+  # Popular CNI plugins:
+  #   Calico    – widely used; supports NetworkPolicy; BGP routing
+  #   Cilium    – eBPF-based; high performance; Hubble observability
+  #   Flannel   – simple overlay; no NetworkPolicy support
+  #   Weave     – simple; supports NetworkPolicy
+  #   AWS VPC CNI    – native VPC IPs for EKS pods
+  #   Azure CNI      – native VNet IPs for AKS pods
+  cni:
+    plugin: calico
+    podCIDR: 10.244.0.0/16
+
+  # ----------------------------------------------------------
+  # metrics-server (optional but recommended)
+  # ----------------------------------------------------------
+  # Collects CPU/memory metrics from kubelets.
+  # Required for kubectl top and HorizontalPodAutoscaler.
+  metricsServer:
+    image: registry.k8s.io/metrics-server/metrics-server:v0.7.0
+
+  # ----------------------------------------------------------
+  # Dashboard (optional)
+  # ----------------------------------------------------------
+  kubernetesDashboard:
+    image: kubernetesui/dashboard:v2.7.0
+    # Access: kubectl proxy, then:
+    # http://localhost:8001/api/v1/namespaces/kubernetes-dashboard/services/https:kubernetes-dashboard:/proxy/
+
+  # ----------------------------------------------------------
+  # Ingress Controller (optional)
+  # ----------------------------------------------------------
+  # Implements the Ingress resource for HTTP/S routing.
+  # Common choices:
+  #   NGINX Ingress Controller
+  #   Traefik
+  #   AWS ALB Ingress Controller
+  #   GKE Ingress
+  ingressController:
+    type: nginx-ingress
+    image: registry.k8s.io/ingress-nginx/controller:v1.9.6
+
+  # ----------------------------------------------------------
+  # cert-manager (optional)
+  # ----------------------------------------------------------
+  # Automates TLS certificate management.
+  # Integrates with Let's Encrypt, Vault, AWS ACM.
+  certManager:
+    image: quay.io/jetstack/cert-manager-controller:v1.14.3
+
+
+# ============================================================
+# CLUSTER COMMUNICATION OVERVIEW
+# ============================================================
+#
+#  kubectl  ──HTTPS──►  kube-apiserver  ──►  etcd (state)
+#                              │
+#                    ┌─────────┼─────────┐
+#                    ▼         ▼         ▼
+#            kube-scheduler  kube-controller-manager  cloud-controller-manager
+#                                        │
+#                              (assigns pods to nodes)
+#                                        │
+#                            ┌───────────┴──────────┐
+#                            ▼                      ▼
+#                     Worker Node A          Worker Node B
+#                    ┌──────────────┐       ┌──────────────┐
+#                    │ kubelet      │       │ kubelet      │
+#                    │ kube-proxy   │       │ kube-proxy   │
+#                    │ containerd   │       │ containerd   │
+#                    │ CNI plugin   │       │ CNI plugin   │
+#                    │ Pod A1  A2   │       │ Pod B1  B2   │
+#                    └──────────────┘       └──────────────┘
+#
+# Pod networking (CNI):
+#   Every pod gets a unique cluster-wide IP.
+#   Pods can communicate with any other pod directly (no NAT).
+#   Services proxy traffic to pods using kube-proxy rules.
+
+
+# ============================================================
+# Useful kubectl commands for cluster inspection
+# ============================================================
+# Cluster info:
+#   kubectl cluster-info
+#   kubectl cluster-info dump
+#
+# Nodes:
+#   kubectl get nodes
+#   kubectl get nodes -o wide
+#   kubectl describe node <node-name>
+#   kubectl top nodes                        # requires metrics-server
+#
+# Control plane pods:
+#   kubectl get pods -n kube-system
+#   kubectl get pods -n kube-system -o wide
+#
+# Component status (deprecated but still useful):
+#   kubectl get componentstatuses
+#
+# View kube-apiserver flags:
+#   kubectl describe pod kube-apiserver-<node> -n kube-system
+#
+# Drain a node for maintenance:
+#   kubectl drain <node-name> --ignore-daemonsets --delete-emptydir-data
+#   kubectl uncordon <node-name>             # re-enable scheduling
+#
+# Cordon (stop new pods, keep existing):
+#   kubectl cordon <node-name>
+#   kubectl uncordon <node-name>
+

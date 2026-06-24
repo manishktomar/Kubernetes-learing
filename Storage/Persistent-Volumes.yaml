@@ -1,0 +1,245 @@
+# ============================================================
+# Kubernetes Persistent Volumes (PV) - Learning Reference
+# ============================================================
+# A PersistentVolume (PV) is a cluster-level storage resource
+# provisioned by an administrator (or dynamically by a StorageClass).
+# It is independent of any single pod's lifecycle.
+#
+# PV lifecycle:
+#   Provisioning → Binding → Using → Releasing → Reclaiming
+#
+# Access Modes:
+#   ReadWriteOnce  (RWO) – single node read-write
+#   ReadOnlyMany   (ROX) – multiple nodes read-only
+#   ReadWriteMany  (RWX) – multiple nodes read-write
+#   ReadWriteOncePod (RWOP) – single pod read-write (k8s 1.22+)
+#
+# Reclaim Policies:
+#   Retain  – manual cleanup; PV is not deleted
+#   Delete  – PV and underlying storage deleted automatically
+#   Recycle – deprecated; basic scrub (rm -rf) then re-available
+#
+# Volume Modes:
+#   Filesystem – default; mounted as a filesystem
+#   Block      – raw block device (no filesystem)
+# ============================================================
+
+
+# ------------------------------------------------------------
+# 1. PV backed by hostPath (testing/learning only)
+#    NOT suitable for production or multi-node clusters.
+# ------------------------------------------------------------
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: pv-hostpath
+  labels:
+    type: local
+    env: dev
+spec:
+  capacity:
+    storage: 5Gi
+  volumeMode: Filesystem
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""             # empty = not managed by StorageClass
+  hostPath:
+    path: /mnt/data                # path on the node
+    type: DirectoryOrCreate
+
+---
+# ------------------------------------------------------------
+# 2. PV backed by NFS (ReadWriteMany – sharable)
+# ------------------------------------------------------------
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: pv-nfs
+  labels:
+    type: nfs
+spec:
+  capacity:
+    storage: 20Gi
+  volumeMode: Filesystem
+  accessModes:
+    - ReadWriteMany               # multiple pods on multiple nodes can mount
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: nfs-storage
+  mountOptions:
+    - hard
+    - nfsvers=4.1
+  nfs:
+    server: nfs-server.example.com
+    path: /exports/k8s-data
+
+---
+# ------------------------------------------------------------
+# 3. PV backed by AWS EBS (RWO – single node)
+#    Static provisioning; prefer dynamic via StorageClass in prod.
+# ------------------------------------------------------------
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: pv-ebs
+  labels:
+    type: ebs
+spec:
+  capacity:
+    storage: 50Gi
+  volumeMode: Filesystem
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Delete
+  storageClassName: gp3
+  csi:
+    driver: ebs.csi.aws.com
+    volumeHandle: vol-0abcdef1234567890   # EBS volume ID
+    fsType: ext4
+    volumeAttributes:
+      type: gp3
+
+---
+# ------------------------------------------------------------
+# 4. PV backed by Azure Disk
+# ------------------------------------------------------------
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: pv-azure-disk
+spec:
+  capacity:
+    storage: 100Gi
+  volumeMode: Filesystem
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Delete
+  storageClassName: managed-premium
+  csi:
+    driver: disk.csi.azure.com
+    volumeHandle: /subscriptions/<sub>/resourceGroups/<rg>/providers/Microsoft.Compute/disks/myDisk
+    fsType: ext4
+    volumeAttributes:
+      cachingMode: ReadOnly
+      kind: Managed
+
+---
+# ------------------------------------------------------------
+# 5. PV backed by GCE Persistent Disk
+# ------------------------------------------------------------
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: pv-gce-pd
+spec:
+  capacity:
+    storage: 50Gi
+  volumeMode: Filesystem
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Delete
+  storageClassName: standard-rwo
+  csi:
+    driver: pd.csi.storage.gke.io
+    volumeHandle: projects/<project>/zones/us-central1-a/disks/my-disk
+    fsType: ext4
+
+---
+# ------------------------------------------------------------
+# 6. PV with nodeAffinity (Local PV)
+#    Pins PV to a specific node; used for local SSDs.
+# ------------------------------------------------------------
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: pv-local
+spec:
+  capacity:
+    storage: 200Gi
+  volumeMode: Filesystem
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Delete
+  storageClassName: local-ssd
+  local:
+    path: /mnt/local-ssd           # path on the specific node
+  nodeAffinity:                    # REQUIRED for local volumes
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/hostname
+              operator: In
+              values:
+                - node-1           # pin to this specific node
+
+---
+# ------------------------------------------------------------
+# 7. Raw Block PV (no filesystem)
+#    Used by databases (Ceph, Cassandra) for direct I/O.
+# ------------------------------------------------------------
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: pv-block
+spec:
+  capacity:
+    storage: 100Gi
+  volumeMode: Block                # raw block device
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: block-storage
+  csi:
+    driver: ebs.csi.aws.com
+    volumeHandle: vol-0block1234567890
+
+---
+# Pod using raw block PV
+apiVersion: v1
+kind: Pod
+metadata:
+  name: block-pv-demo
+spec:
+  containers:
+    - name: db
+      image: busybox:1.36
+      command: ["sh", "-c", "ls -la /dev/xvda && sleep 3600"]
+      volumeDevices:
+        - name: block-vol
+          devicePath: /dev/xvda    # block device path (not mountPath)
+      resources:
+        requests:
+          cpu: "100m"
+          memory: "128Mi"
+        limits:
+          cpu: "250m"
+          memory: "256Mi"
+  volumes:
+    - name: block-vol
+      persistentVolumeClaim:
+        claimName: pvc-block       # PVC requesting the block PV
+
+---
+# ------------------------------------------------------------
+# Useful kubectl commands for PVs
+# ------------------------------------------------------------
+# List all PVs:
+#   kubectl get pv
+#   kubectl get pv -o wide
+#
+# Describe a PV:
+#   kubectl describe pv pv-hostpath
+#
+# PV status values:
+#   Available  – not yet bound to a PVC
+#   Bound      – bound to a PVC
+#   Released   – PVC deleted; PV waiting for reclaim
+#   Failed     – reclaim failed
+#
+# Manually reclaim a Released PV (Retain policy):
+#   # 1. Edit PV to remove claimRef
+#   kubectl edit pv pv-hostpath
+#   # Delete the claimRef section, then PV becomes Available again
+#
+# Delete a PV (WARNING: data may be lost depending on reclaimPolicy):
+#   kubectl delete pv pv-hostpath

@@ -1,0 +1,201 @@
+# ============================================================
+# Azure AKS (Azure Kubernetes Service) - Learning Reference
+# ============================================================
+# AKS is Microsoft Azure's fully managed Kubernetes service.
+#
+# Ways to create an AKS cluster:
+#   1. Azure CLI (az aks)  ← recommended for learning
+#   2. Azure Portal (GUI)
+#   3. Terraform / Bicep / ARM templates
+#   4. Pulumi
+#
+# Prerequisites
+#   - Azure CLI installed (az)
+#   - kubectl installed
+#   - An active Azure subscription
+# ============================================================
+
+
+# ============================================================
+# TOOL INSTALLATION
+# ============================================================
+# Install Azure CLI (Linux):
+#   curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
+#   az --version
+#
+# Login to Azure:
+#   az login                              # opens browser
+#   az login --use-device-code            # no-browser login
+#
+# Set active subscription:
+#   az account list --output table
+#   az account set --subscription "<subscription-id-or-name>"
+#
+# Install kubectl via Azure CLI:
+#   sudo az aks install-cli
+# ============================================================
+
+
+# ============================================================
+# Quick cluster creation via Azure CLI
+# ============================================================
+# Create resource group
+#   az group create --name k8s-learning-rg --location eastus
+#
+# Create basic AKS cluster
+#   az aks create \
+#     --resource-group k8s-learning-rg \
+#     --name learning-cluster \
+#     --node-count 3 \
+#     --node-vm-size Standard_DS2_v2 \
+#     --kubernetes-version 1.29 \
+#     --enable-addons monitoring \
+#     --generate-ssh-keys
+#
+# Get credentials (merges into ~/.kube/config)
+#   az aks get-credentials \
+#     --resource-group k8s-learning-rg \
+#     --name learning-cluster
+#
+# Verify
+#   kubectl get nodes
+# ============================================================
+
+
+# ============================================================
+# Bicep / ARM equivalent in YAML comment form –
+# Below is the AKS Managed Cluster as YAML-style reference
+# (mirrors the Azure REST API / ARM template schema)
+# ============================================================
+apiVersion: "2024-01-01"                # Azure API version (not k8s apiVersion)
+kind: ManagedCluster                    # Azure resource type
+name: learning-cluster
+location: eastus
+resourceGroup: k8s-learning-rg
+tags:
+  environment: learning
+  team: platform
+
+properties:
+  kubernetesVersion: "1.29"
+  dnsPrefix: learning-cluster
+
+  # Default node pool (system pool  required)
+  agentPoolProfiles:
+    - name: systempool
+      count: 2
+      vmSize: Standard_DS2_v2
+      osType: Linux
+      osDiskSizeGB: 128
+      osDiskType: Managed
+      type: VirtualMachineScaleSets      # required for autoscaling
+      mode: System                       # runs kube-system pods
+      enableAutoScaling: true
+      minCount: 2
+      maxCount: 5
+      availabilityZones: ["1", "2", "3"]
+      nodeTaints: []
+      nodeLabels:
+        role: system
+
+    # User pool for application workloads
+    - name: userpool
+      count: 3
+      vmSize: Standard_DS3_v2
+      osType: Linux
+      osDiskSizeGB: 128
+      mode: User                         # runs application pods
+      enableAutoScaling: true
+      minCount: 1
+      maxCount: 10
+      availabilityZones: ["1", "2", "3"]
+      nodeLabels:
+        role: app
+
+  # Networking
+  networkProfile:
+    networkPlugin: azure                 # azure (VNet) or kubenet
+    networkPolicy: azure                 # azure, calico, or cilium
+    loadBalancerSku: standard
+    outboundType: loadBalancer
+    podCidr: 10.244.0.0/16
+    serviceCidr: 10.0.0.0/16
+    dnsServiceIP: 10.0.0.10
+
+  # Azure Active Directory integration
+  aadProfile:
+    managed: true                        # use managed AAD
+    enableAzureRBAC: true                # Azure RBAC for k8s authz
+    tenantID: "<your-tenant-id>"
+
+  # Managed identity
+  identity:
+    type: SystemAssigned
+
+  # Add-ons
+  addonProfiles:
+    # Azure Monitor / Container Insights
+    omsagent:
+      enabled: true
+      config:
+        logAnalyticsWorkspaceResourceID: "/subscriptions/.../workspaces/my-workspace"
+    # Azure Policy for Kubernetes
+    azurepolicy:
+      enabled: true
+    # HTTP application routing (dev only, not prod)
+    httpApplicationRouting:
+      enabled: false
+
+  # Auto-upgrade channel: none, patch, stable, rapid, node-image
+  autoUpgradeProfile:
+    upgradeChannel: patch
+
+  # OS patching
+  nodePatchConfig:
+    patchStatus: "AutomaticByPlatform"
+
+
+# ============================================================
+# COMMON AKS COMMANDS
+# ============================================================
+# List clusters
+#   az aks list --output table
+#
+# Show cluster details
+#   az aks show --resource-group k8s-learning-rg --name learning-cluster
+#
+# Scale node pool
+#   az aks scale \
+#     --resource-group k8s-learning-rg \
+#     --name learning-cluster \
+#     --node-count 5 \
+#     --nodepool-name userpool
+#
+# Add a new node pool
+#   az aks nodepool add \
+#     --resource-group k8s-learning-rg \
+#     --cluster-name learning-cluster \
+#     --name gpupool \
+#     --node-count 1 \
+#     --node-vm-size Standard_NC6
+#
+# Upgrade Kubernetes version
+#   az aks get-upgrades --resource-group k8s-learning-rg --name learning-cluster
+#   az aks upgrade \
+#     --resource-group k8s-learning-rg \
+#     --name learning-cluster \
+#     --kubernetes-version 1.30
+#
+# Enable cluster autoscaler
+#   az aks update \
+#     --resource-group k8s-learning-rg \
+#     --name learning-cluster \
+#     --enable-cluster-autoscaler \
+#     --min-count 1 --max-count 10
+#
+# Browse Kubernetes dashboard
+#   az aks browse --resource-group k8s-learning-rg --name learning-cluster
+#
+# Delete cluster
+#   az aks delete --resource-group k8s-learning-rg --name learning-cluster --yes
+#   az group delete --name k8s-learning-rg --yes --no-wait

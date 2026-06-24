@@ -1,0 +1,883 @@
+# ============================================================
+# Kubernetes Pod Security - Advanced Learning Reference
+# ============================================================
+# Pod Security encompasses multiple layers of defense:
+#
+#   1. SecurityContext (container & pod level)
+#   2. Pod Security Admission (PSA) - replaces PodSecurityPolicy
+#   3. Service Account hardening
+#   4. Network Policies (pod-level network segmentation)
+#   5. Seccomp Profiles (syscall filtering)
+#   6. AppArmor / SELinux (mandatory access control)
+#   7. Runtime Classes (sandboxed runtimes like gVisor, Kata)
+#   8. Image Security (signed images, read-only root FS)
+#   9. Secrets management best practices
+#  10. Open Policy Agent (OPA) / Kyverno policies
+#
+# Pod Security Standards (PSS) levels:
+#   - Privileged:  Unrestricted (for system pods only)
+#   - Baseline:    Minimally restrictive, prevents known escalations
+#   - Restricted:  Heavily restricted, security best practices
+#
+# Key principles:
+#   - Least privilege: drop all capabilities, add only needed ones
+#   - Defense in depth: multiple layers of security
+#   - Immutable infrastructure: read-only filesystems
+#   - Zero trust: restrict network, limit service account scope
+# ============================================================
+
+
+# ############################################################
+# SECTION 1: SecurityContext - Pod & Container Level
+# ############################################################
+
+# ------------------------------------------------------------
+# 1.1 Hardened Pod with Full SecurityContext
+#     This is the gold standard for production workloads.
+# ------------------------------------------------------------
+apiVersion: v1
+kind: Pod
+metadata:
+  name: hardened-pod
+  namespace: production
+  labels:
+    app: secure-app
+    security-level: restricted
+spec:
+  # --- Pod-level security context ---
+  securityContext:
+    runAsNonRoot: true               # NEVER run as root
+    runAsUser: 1000                   # Explicit non-root UID
+    runAsGroup: 3000                  # Explicit GID
+    fsGroup: 2000                    # Group for volume mounts
+    fsGroupChangePolicy: "OnRootMismatch"  # Only change perms when needed
+    seccompProfile:
+      type: RuntimeDefault           # Apply default seccomp profile
+    supplementalGroups: [4000]       # Additional groups for the process
+
+  # --- Disable service account token auto-mount ---
+  automountServiceAccountToken: false
+
+  # --- Use a restricted service account ---
+  serviceAccountName: restricted-sa
+
+  # --- DNS policy for network-restricted pods ---
+  dnsPolicy: ClusterFirst
+
+  containers:
+    - name: secure-app
+      image: myregistry.io/app:v1.2.3@sha256:abc123...  # Pin by digest
+      ports:
+        - containerPort: 8080
+          protocol: TCP
+
+      # --- Container-level security context ---
+      securityContext:
+        allowPrivilegeEscalation: false   # Block setuid/setgid
+        readOnlyRootFilesystem: true      # Immutable filesystem
+        runAsNonRoot: true
+        runAsUser: 1000
+        capabilities:
+          drop:
+            - ALL                         # Drop ALL Linux capabilities
+          # add:                          # Only add what you absolutely need
+          #   - NET_BIND_SERVICE          # e.g., bind to ports < 1024
+        seccompProfile:
+          type: RuntimeDefault
+        # Uncomment for SELinux enforcement:
+        # seLinuxOptions:
+        #   level: "s0:c123,c456"
+
+      resources:
+        requests:
+          cpu: "100m"
+          memory: "128Mi"
+        limits:
+          cpu: "500m"
+          memory: "256Mi"
+
+      # Writable directories via emptyDir (since rootFS is read-only)
+      volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+        - name: app-cache
+          mountPath: /app/cache
+
+  volumes:
+    - name: tmp
+      emptyDir:
+        medium: Memory               # tmpfs - no disk persistence
+        sizeLimit: "64Mi"
+    - name: app-cache
+      emptyDir:
+        sizeLimit: "128Mi"
+
+---
+# ------------------------------------------------------------
+# 1.2 Pod that must NOT be privileged (anti-pattern example)
+#     NEVER do this in production – shown for awareness only.
+# ------------------------------------------------------------
+# apiVersion: v1
+# kind: Pod
+# metadata:
+#   name: dangerous-privileged-pod    # DO NOT USE
+# spec:
+#   containers:
+#     - name: danger
+#       image: ubuntu
+#       securityContext:
+#         privileged: true            # DANGER: full host access
+#         runAsUser: 0                # DANGER: running as root
+#         capabilities:
+#           add: ["ALL"]              # DANGER: all capabilities
+#   hostNetwork: true                 # DANGER: host network
+#   hostPID: true                     # DANGER: host PID namespace
+#   hostIPC: true                     # DANGER: host IPC namespace
+
+---
+# ############################################################
+# SECTION 2: Pod Security Admission (PSA)
+# ############################################################
+# PSA replaces PodSecurityPolicy (removed in k8s v1.25).
+# Enforced at namespace level via labels.
+#
+# Modes:
+#   enforce – rejects pods that violate the policy
+#   audit   – logs violations but allows the pod
+#   warn    – sends warnings to the user
+#
+# Levels: privileged, baseline, restricted
+# ------------------------------------------------------------
+
+# 2.1 Namespace with Restricted PSA (most secure)
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: secure-namespace
+  labels:
+    # Enforce the restricted security standard
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    # Audit violations against restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: latest
+    # Warn users about violations
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: latest
+
+---
+# 2.2 Namespace with Baseline PSA (moderate security)
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: baseline-namespace
+  labels:
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: latest
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: latest
+
+---
+# ############################################################
+# SECTION 3: Service Account Hardening
+# ############################################################
+
+# 3.1 Restricted Service Account (minimal permissions)
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: restricted-sa
+  namespace: production
+  annotations:
+    description: "Minimal service account with no default token"
+automountServiceAccountToken: false    # Don't mount token into pods
+
+---
+# 3.2 Role with minimal RBAC permissions
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: app-minimal-role
+  namespace: production
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list"]            # Read-only ConfigMaps
+    resourceNames: ["app-config"]     # Restrict to specific ConfigMap
+
+---
+# 3.3 RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: app-minimal-binding
+  namespace: production
+subjects:
+  - kind: ServiceAccount
+    name: restricted-sa
+    namespace: production
+roleRef:
+  kind: Role
+  name: app-minimal-role
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# ############################################################
+# SECTION 4: Network Policies (Pod-level Firewall)
+# ############################################################
+
+# 4.1 Default Deny All Ingress & Egress
+#     Apply this FIRST, then allow specific traffic.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: production
+spec:
+  podSelector: {}                    # Applies to ALL pods in namespace
+  policyTypes:
+    - Ingress
+    - Egress
+  # No ingress/egress rules = deny all
+
+---
+# 4.2 Allow specific ingress traffic
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-app-ingress
+  namespace: production
+spec:
+  podSelector:
+    matchLabels:
+      app: secure-app
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        # Only allow traffic from pods with label role=frontend
+        - podSelector:
+            matchLabels:
+              role: frontend
+        # Only from same namespace
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: production
+      ports:
+        - protocol: TCP
+          port: 8080
+
+---
+# 4.3 Allow specific egress (DNS + external API)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-app-egress
+  namespace: production
+spec:
+  podSelector:
+    matchLabels:
+      app: secure-app
+  policyTypes:
+    - Egress
+  egress:
+    # Allow DNS resolution
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Allow HTTPS to external APIs
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8        # Block internal network
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443
+
+---
+# ############################################################
+# SECTION 5: Seccomp Profiles (Syscall Filtering)
+# ############################################################
+# Seccomp restricts which Linux system calls a container can make.
+# Profiles: RuntimeDefault, Localhost, Unconfined
+#
+# RuntimeDefault blocks ~44 dangerous syscalls.
+# Custom profiles provide fine-grained control.
+
+# 5.1 Pod with RuntimeDefault seccomp (recommended minimum)
+apiVersion: v1
+kind: Pod
+metadata:
+  name: seccomp-runtime-default
+  namespace: production
+spec:
+  securityContext:
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: app
+      image: myregistry.io/app:v1.2.3
+      securityContext:
+        allowPrivilegeEscalation: false
+
+---
+# 5.2 Pod with custom seccomp profile
+#     Profile must exist on node at /var/lib/kubelet/seccomp/
+apiVersion: v1
+kind: Pod
+metadata:
+  name: seccomp-custom
+  namespace: production
+spec:
+  securityContext:
+    seccompProfile:
+      type: Localhost
+      localhostProfile: profiles/strict-app.json
+  containers:
+    - name: app
+      image: myregistry.io/app:v1.2.3
+      securityContext:
+        allowPrivilegeEscalation: false
+
+# Example custom seccomp profile (strict-app.json):
+# {
+#   "defaultAction": "SCMP_ACT_ERRNO",
+#   "architectures": ["SCMP_ARCH_X86_64"],
+#   "syscalls": [
+#     {
+#       "names": ["read","write","open","close","stat","fstat",
+#                 "mmap","mprotect","munmap","brk","exit_group",
+#                 "futex","epoll_wait","accept4","socket","bind",
+#                 "listen","setsockopt","getsockopt"],
+#       "action": "SCMP_ACT_ALLOW"
+#     }
+#   ]
+# }
+
+---
+# ############################################################
+# SECTION 6: AppArmor Profiles
+# ############################################################
+# AppArmor provides Mandatory Access Control (MAC) on Linux.
+# Profiles restrict file access, network, and capabilities.
+#
+# Since Kubernetes 1.30, AppArmor uses the securityContext field.
+# Older versions used annotations.
+
+# 6.1 Pod with AppArmor profile (k8s 1.30+)
+apiVersion: v1
+kind: Pod
+metadata:
+  name: apparmor-pod
+  namespace: production
+spec:
+  containers:
+    - name: app
+      image: myregistry.io/app:v1.2.3
+      securityContext:
+        appArmorProfile:
+          type: RuntimeDefault       # Use container runtime's default
+        # OR use a custom loaded profile:
+        # appArmorProfile:
+        #   type: Localhost
+        #   localhostProfile: my-custom-profile
+
+---
+# 6.2 Pod with AppArmor (legacy annotation method, k8s < 1.30)
+apiVersion: v1
+kind: Pod
+metadata:
+  name: apparmor-pod-legacy
+  namespace: production
+  annotations:
+    # Format: container.apparmor.security.beta.kubernetes.io/<container-name>
+    container.apparmor.security.beta.kubernetes.io/app: runtime/default
+spec:
+  containers:
+    - name: app
+      image: myregistry.io/app:v1.2.3
+
+---
+# ############################################################
+# SECTION 7: RuntimeClass (Sandboxed Container Runtimes)
+# ############################################################
+# RuntimeClass lets you select different container runtimes
+# for stronger isolation (gVisor, Kata Containers, etc.)
+
+# 7.1 RuntimeClass definition for gVisor
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: gvisor
+handler: runsc                        # Handler configured in containerd
+scheduling:
+  nodeSelector:
+    runtime: gvisor                   # Only schedule on nodes with gVisor
+
+---
+# 7.2 RuntimeClass definition for Kata Containers
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: kata-containers
+handler: kata                         # Kata runtime handler
+overhead:
+  podFixed:
+    memory: "160Mi"                   # Additional memory for VM overhead
+    cpu: "250m"
+
+---
+# 7.3 Pod using gVisor sandboxed runtime
+apiVersion: v1
+kind: Pod
+metadata:
+  name: sandboxed-pod
+  namespace: production
+spec:
+  runtimeClassName: gvisor            # Use gVisor for syscall interception
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: untrusted-app
+      image: myregistry.io/untrusted-app:v1.0.0
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+      resources:
+        limits:
+          cpu: "500m"
+          memory: "256Mi"
+
+---
+# ############################################################
+# SECTION 8: Image Security
+# ############################################################
+
+# 8.1 Pod with image pinned by SHA256 digest
+#     Prevents tag mutation attacks.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pinned-image-pod
+  namespace: production
+spec:
+  containers:
+    - name: app
+      # ALWAYS pin by digest in production
+      image: docker.io/library/nginx@sha256:4c0fdaa8b6341bfdeca5f18f7837462c80cff90105d1d300c12c4460e3b7596e
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        runAsNonRoot: true
+        runAsUser: 101                # nginx user
+        capabilities:
+          drop: ["ALL"]
+          add: ["NET_BIND_SERVICE"]   # Needed for port 80
+
+---
+# 8.2 ImagePullPolicy and Private Registry Authentication
+apiVersion: v1
+kind: Pod
+metadata:
+  name: private-registry-pod
+  namespace: production
+spec:
+  imagePullSecrets:
+    - name: registry-credentials     # Docker registry secret
+  containers:
+    - name: app
+      image: private-registry.company.io/app:v2.0.0
+      imagePullPolicy: Always        # Always pull (check for updates)
+
+---
+# ############################################################
+# SECTION 9: Pod Disruption Budget (Availability Security)
+# ############################################################
+# Ensures a minimum number of pods remain available during
+# voluntary disruptions (node drain, upgrades).
+
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: secure-app-pdb
+  namespace: production
+spec:
+  minAvailable: 2                    # At least 2 pods must be running
+  # OR: maxUnavailable: 1           # At most 1 pod can be down
+  selector:
+    matchLabels:
+      app: secure-app
+
+---
+# ############################################################
+# SECTION 10: Kyverno Policies (Policy-as-Code)
+# ############################################################
+# Kyverno is a Kubernetes-native policy engine.
+# Alternative to OPA/Gatekeeper with simpler syntax.
+
+# 10.1 Require non-root containers
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-run-as-nonroot
+  annotations:
+    policies.kyverno.io/title: Require runAsNonRoot
+    policies.kyverno.io/severity: high
+spec:
+  validationFailureAction: Enforce   # Block non-compliant pods
+  background: true
+  rules:
+    - name: run-as-non-root
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      validate:
+        message: "Containers must run as non-root. Set securityContext.runAsNonRoot=true"
+        pattern:
+          spec:
+            containers:
+              - securityContext:
+                  runAsNonRoot: true
+
+---
+# 10.2 Require read-only root filesystem
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-ro-rootfs
+  annotations:
+    policies.kyverno.io/title: Require Read-Only Root Filesystem
+    policies.kyverno.io/severity: medium
+spec:
+  validationFailureAction: Enforce
+  rules:
+    - name: readonly-root-filesystem
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      validate:
+        message: "Root filesystem must be read-only. Set securityContext.readOnlyRootFilesystem=true"
+        pattern:
+          spec:
+            containers:
+              - securityContext:
+                  readOnlyRootFilesystem: true
+
+---
+# 10.3 Disallow privileged containers
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: disallow-privileged-containers
+  annotations:
+    policies.kyverno.io/title: Disallow Privileged Containers
+    policies.kyverno.io/severity: critical
+spec:
+  validationFailureAction: Enforce
+  rules:
+    - name: no-privileged
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      validate:
+        message: "Privileged containers are not allowed."
+        pattern:
+          spec:
+            containers:
+              - securityContext:
+                  privileged: "false"
+
+---
+# 10.4 Require image digest (prevent tag mutation)
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-image-digest
+  annotations:
+    policies.kyverno.io/title: Require Image Digest
+    policies.kyverno.io/severity: medium
+spec:
+  validationFailureAction: Audit     # Audit mode first, then enforce
+  rules:
+    - name: image-digest
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      validate:
+        message: "Images must use a digest (@sha256:...) instead of a mutable tag."
+        pattern:
+          spec:
+            containers:
+              - image: "*@sha256:*"
+
+---
+# ############################################################
+# SECTION 11: OPA Gatekeeper Constraints
+# ############################################################
+# OPA Gatekeeper uses ConstraintTemplates and Constraints.
+
+# 11.1 ConstraintTemplate - Disallow latest tag
+apiVersion: templates.gatekeeper.sh/v1
+kind: ConstraintTemplate
+metadata:
+  name: k8sdisallowedtags
+spec:
+  crd:
+    spec:
+      names:
+        kind: K8sDisallowedTags
+      validation:
+        openAPIV3Schema:
+          type: object
+          properties:
+            tags:
+              type: array
+              items:
+                type: string
+  targets:
+    - target: admission.k8s.gatekeeper.sh
+      rego: |
+        package k8sdisallowedtags
+        violation[{"msg": msg}] {
+          container := input.review.object.spec.containers[_]
+          tag := split(container.image, ":")[1]
+          tag == input.parameters.tags[_]
+          msg := sprintf("Container %v uses disallowed tag: %v", [container.name, tag])
+        }
+
+---
+# 11.2 Constraint - Block 'latest' tag
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: K8sDisallowedTags
+metadata:
+  name: no-latest-tag
+spec:
+  match:
+    kinds:
+      - apiGroups: [""]
+        kinds: ["Pod"]
+    namespaces: ["production"]
+  parameters:
+    tags: ["latest"]
+
+---
+# ############################################################
+# SECTION 12: Pod Security - Advanced Patterns
+# ############################################################
+
+# 12.1 Distroless container (minimal attack surface)
+apiVersion: v1
+kind: Pod
+metadata:
+  name: distroless-app
+  namespace: production
+spec:
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65534                  # nobody user
+    seccompProfile:
+      type: RuntimeDefault
+  automountServiceAccountToken: false
+  containers:
+    - name: app
+      # Distroless images have NO shell, no package manager
+      image: gcr.io/distroless/static-debian12:nonroot
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+
+---
+# 12.2 Init container for setup (separate privileges)
+apiVersion: v1
+kind: Pod
+metadata:
+  name: init-setup-pod
+  namespace: production
+spec:
+  securityContext:
+    runAsNonRoot: true
+    fsGroup: 2000
+    seccompProfile:
+      type: RuntimeDefault
+  initContainers:
+    - name: setup-permissions
+      image: busybox:1.36
+      command: ["sh", "-c", "cp /config-src/* /config/ && chmod 400 /config/*"]
+      securityContext:
+        runAsUser: 1000
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+      volumeMounts:
+        - name: config-volume
+          mountPath: /config
+        - name: config-source
+          mountPath: /config-src
+          readOnly: true
+  containers:
+    - name: app
+      image: myregistry.io/app:v1.2.3
+      securityContext:
+        runAsUser: 1000
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+      volumeMounts:
+        - name: config-volume
+          mountPath: /config
+          readOnly: true
+  volumes:
+    - name: config-volume
+      emptyDir: {}
+    - name: config-source
+      configMap:
+        name: app-config
+
+---
+# 12.3 Ephemeral containers for debugging (without compromising security)
+# Use kubectl debug to attach an ephemeral container at runtime:
+#   kubectl debug -it hardened-pod --image=busybox:1.36 --target=secure-app
+#
+# This is preferred over exec into the container because:
+#   - Original container stays read-only
+#   - Ephemeral container can have different security context
+#   - Audit trail is maintained
+
+---
+# ############################################################
+# SECTION 13: Resource Quotas (Prevent Resource Abuse)
+# ############################################################
+
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: production-quota
+  namespace: production
+spec:
+  hard:
+    requests.cpu: "10"               # Total CPU requests in namespace
+    requests.memory: "20Gi"          # Total memory requests
+    limits.cpu: "20"                 # Total CPU limits
+    limits.memory: "40Gi"            # Total memory limits
+    pods: "50"                       # Max pods in namespace
+    count/deployments.apps: "20"     # Max deployments
+    count/services: "20"             # Max services
+
+---
+# LimitRange - Enforce per-pod/container resource boundaries
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: production-limits
+  namespace: production
+spec:
+  limits:
+    - type: Container
+      default:                       # Default limits if not specified
+        cpu: "500m"
+        memory: "256Mi"
+      defaultRequest:                # Default requests if not specified
+        cpu: "100m"
+        memory: "128Mi"
+      max:                           # Maximum allowed
+        cpu: "2"
+        memory: "2Gi"
+      min:                           # Minimum required
+        cpu: "50m"
+        memory: "64Mi"
+    - type: Pod
+      max:
+        cpu: "4"
+        memory: "4Gi"
+
+
+# ############################################################
+# QUICK REFERENCE: kubectl commands for Pod Security
+# ############################################################
+#
+# --- Check Pod Security Standards compliance ---
+# kubectl label --dry-run=server --overwrite ns <namespace> \
+#   pod-security.kubernetes.io/enforce=restricted
+#
+# --- View seccomp profiles on a node ---
+# ls /var/lib/kubelet/seccomp/
+#
+# --- Check AppArmor status ---
+# aa-status
+# cat /sys/module/apparmor/parameters/enabled
+#
+# --- Debug a hardened pod (ephemeral container) ---
+# kubectl debug -it <pod-name> --image=busybox --target=<container>
+#
+# --- Check pod security violations ---
+# kubectl get events --field-selector reason=FailedCreate -n <namespace>
+#
+# --- Audit pod security settings ---
+# kubectl get pods -n <namespace> -o json | \
+#   jq '.items[].spec.containers[].securityContext'
+#
+# --- Test network policies ---
+# kubectl run test-pod --rm -it --image=busybox -- wget -qO- http://secure-app:8080
+#
+# --- Verify image digests ---
+# kubectl get pods -o jsonpath='{range .items[*]}{.spec.containers[*].image}{"\n"}{end}'
+#
+# --- Check RBAC permissions for a service account ---
+# kubectl auth can-i --list --as=system:serviceaccount:production:restricted-sa
+#
+# --- Scan for security issues (using kubeaudit) ---
+# kubeaudit all -n production
+#
+# --- Scan with Trivy ---
+# trivy k8s --report=summary --namespace production
+#
+# ############################################################
+# SECURITY CHECKLIST FOR PRODUCTION PODS
+# ############################################################
+#
+# [ ] runAsNonRoot: true
+# [ ] runAsUser: <non-zero UID>
+# [ ] allowPrivilegeEscalation: false
+# [ ] readOnlyRootFilesystem: true
+# [ ] capabilities.drop: ["ALL"]
+# [ ] seccompProfile.type: RuntimeDefault (minimum)
+# [ ] automountServiceAccountToken: false (if not needed)
+# [ ] resources.limits defined (CPU + memory)
+# [ ] Image pinned by digest (@sha256:...)
+# [ ] No hostNetwork, hostPID, hostIPC
+# [ ] No privileged: true
+# [ ] NetworkPolicy applied (default deny + explicit allow)
+# [ ] PodDisruptionBudget defined
+# [ ] Service account with minimal RBAC
+# [ ] Namespace has PSA labels (restricted or baseline)
+# [ ] Image from trusted registry with vulnerability scanning
+# [ ] No secrets in environment variables (use mounted volumes)
+#

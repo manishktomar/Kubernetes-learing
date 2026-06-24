@@ -1,0 +1,166 @@
+# ============================================================
+# Kubernetes Service: NodePort - Learning Reference
+# ============================================================
+# NodePort exposes the service on a static port on EVERY node's IP.
+# Traffic hitting <NodeIP>:<NodePort> is forwarded to the service.
+#
+# Port range: 30000–32767 (default; configurable in kube-apiserver)
+#
+# Traffic flow:
+#   External client → <NodeIP>:<NodePort> → kube-proxy →
+#   ClusterIP:<Port> → Pod:<TargetPort>
+#
+# Use NodePort for:
+#   - Development and testing (not recommended for production)
+#   - On-premises clusters without a cloud load balancer
+#   - Exposing services when external load balancer is managed externally
+#
+# Limitations:
+#   - One port per service (ports 30000-32767 are a shared global resource)
+#   - Traffic may hop to a node that does NOT have the pod (extra network hop)
+#   - Not suitable for high-volume production without an external LB in front
+# ============================================================
+
+
+# ------------------------------------------------------------
+# 1. Basic NodePort Service
+# ------------------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-nodeport
+  namespace: default
+  labels:
+    app: web
+spec:
+  type: NodePort
+  selector:
+    app: web
+  ports:
+    - name: http
+      port: 80              # ClusterIP port (internal)
+      targetPort: 8080      # pod container port
+      nodePort: 30080       # node port (30000-32767); omit to auto-assign
+      protocol: TCP
+
+---
+# The backing Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: default
+  labels:
+    app: web
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: web
+  template:
+    metadata:
+      labels:
+        app: web
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:1.25.3
+          ports:
+            - containerPort: 8080
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "250m"
+              memory: "256Mi"
+
+---
+# ------------------------------------------------------------
+# 2. NodePort with auto-assigned port
+#    Kubernetes picks a free port in 30000-32767.
+# ------------------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-nodeport-auto
+  namespace: default
+spec:
+  type: NodePort
+  selector:
+    app: api
+  ports:
+    - name: http
+      port: 80
+      targetPort: 3000
+      # nodePort omitted → auto-assigned
+
+---
+# ------------------------------------------------------------
+# 3. NodePort with externalTrafficPolicy: Local
+#    Only routes to pods on the SAME node that received the traffic.
+#    Benefits:
+#      - Preserves client source IP
+#      - Eliminates extra network hop
+#    Risk:
+#      - Load imbalanced if pods are unevenly distributed
+# ------------------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-local-traffic
+  namespace: default
+spec:
+  type: NodePort
+  selector:
+    app: api
+  externalTrafficPolicy: Local    # default is Cluster
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+      nodePort: 30090
+
+---
+# ------------------------------------------------------------
+# 4. NodePort with multiple ports
+# ------------------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: multi-port-nodeport
+  namespace: default
+spec:
+  type: NodePort
+  selector:
+    app: my-app
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+      nodePort: 30080
+    - name: https
+      port: 443
+      targetPort: 8443
+      nodePort: 30443
+
+---
+# ------------------------------------------------------------
+# Useful kubectl commands for NodePort
+# ------------------------------------------------------------
+# List services with node port info:
+#   kubectl get svc web-nodeport
+#   kubectl describe svc web-nodeport
+#
+# Access from outside the cluster:
+#   curl http://<node-ip>:30080
+#   minikube service web-nodeport --url    # get URL for minikube
+#
+# Get node IPs:
+#   kubectl get nodes -o wide
+#
+# Verify endpoints:
+#   kubectl get endpoints web-nodeport
+#
+# Port forward instead (development only):
+#   kubectl port-forward svc/web-nodeport 8080:80

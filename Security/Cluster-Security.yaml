@@ -1,0 +1,1345 @@
+# ============================================================
+# Kubernetes Cluster Security - Advanced Learning Reference
+# ============================================================
+# Cluster security protects the control plane, etcd, API server,
+# and the entire cluster infrastructure from internal and external
+# threats.
+#
+# Key areas of Cluster Security:
+#   1.  API Server hardening (authentication & authorization)
+#   2.  RBAC (Role-Based Access Control)
+#   3.  etcd security (encryption, access control)
+#   4.  Admission Controllers (gatekeeping)
+#   5.  Service Mesh / mTLS (Istio, Linkerd)
+#   6.  Multi-tenancy isolation
+#   7.  Secrets management (external vaults)
+#   8.  Supply chain security (image signing, SBOM)
+#   9.  Cluster upgrade & patch management
+#  10.  Backup & disaster recovery security
+#  11.  Logging, monitoring & alerting
+#  12.  Zero-trust networking
+#  13.  Cloud provider IAM integration
+#  14.  Kubernetes API deprecation & version policy
+#
+# Security model: Defense in depth
+#   External → Firewall → API Server Auth → RBAC → Admission →
+#   Network Policy → Pod Security → Container Runtime → Kernel
+# ============================================================
+
+
+# ############################################################
+# SECTION 1: API Server Hardening
+# ############################################################
+# The kube-apiserver is the single entry point to the cluster.
+# Securing it is the MOST CRITICAL task.
+#
+# Key kube-apiserver flags for security:
+#
+# --- Authentication ---
+# --anonymous-auth=false                         # Disable anonymous access
+# --authentication-token-webhook-config-file=... # External auth webhook
+# --oidc-issuer-url=https://idp.company.io       # OIDC provider (Okta, Azure AD)
+# --oidc-client-id=kubernetes
+# --oidc-username-claim=email
+# --oidc-groups-claim=groups
+# --token-auth-file=""                           # DISABLE static token file
+# --basic-auth-file=""                           # DISABLE basic auth (removed in 1.19)
+#
+# --- Authorization ---
+# --authorization-mode=Node,RBAC                 # Node + RBAC (never AlwaysAllow)
+#
+# --- Admission Controllers (recommended set) ---
+# --enable-admission-plugins=\
+#   NodeRestriction,\
+#   PodSecurity,\
+#   LimitRanger,\
+#   ResourceQuota,\
+#   ServiceAccount,\
+#   DefaultStorageClass,\
+#   MutatingAdmissionWebhook,\
+#   ValidatingAdmissionWebhook,\
+#   ValidatingAdmissionPolicy
+#
+# --- TLS ---
+# --tls-cert-file=/etc/kubernetes/pki/apiserver.crt
+# --tls-private-key-file=/etc/kubernetes/pki/apiserver.key
+# --tls-min-version=VersionTLS12
+# --tls-cipher-suites=TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+# --client-ca-file=/etc/kubernetes/pki/ca.crt
+#
+# --- Audit ---
+# --audit-policy-file=/etc/kubernetes/audit-policy.yaml
+# --audit-log-path=/var/log/kubernetes/audit.log
+# --audit-log-maxage=30
+# --audit-log-maxbackup=10
+# --audit-log-maxsize=100
+#
+# --- Rate limiting & DoS protection ---
+# --max-requests-inflight=400                    # Max non-mutating requests
+# --max-mutating-requests-inflight=200           # Max mutating requests
+# --request-timeout=60s                          # Default request timeout
+# --min-request-timeout=1800                     # Min timeout for watch requests
+#
+# --- Profiling (disable in production) ---
+# --profiling=false
+#
+# --- Service Account ---
+# --service-account-lookup=true                  # Verify SA exists before accepting token
+# --service-account-key-file=/etc/kubernetes/pki/sa.pub
+
+---
+# ############################################################
+# SECTION 2: RBAC - Role-Based Access Control
+# ############################################################
+# RBAC is the primary authorization mechanism in Kubernetes.
+# Principle: Grant LEAST PRIVILEGE. Never use cluster-admin broadly.
+
+# 2.1 ClusterRole - Read-only access (for developers)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: developer-readonly
+  labels:
+    rbac.company.io/level: readonly
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "services", "configmaps", "events", "namespaces"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets", "statefulsets", "daemonsets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses", "networkpolicies"]
+    verbs: ["get", "list", "watch"]
+  # Explicitly deny access to secrets
+  # (absence of secrets in this role = denied by default)
+
+---
+# 2.2 ClusterRole - Namespace admin (for team leads)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: namespace-admin
+rules:
+  - apiGroups: ["", "apps", "batch", "networking.k8s.io"]
+    resources: ["*"]
+    verbs: ["*"]
+  # Cannot modify cluster-level resources
+  - apiGroups: [""]
+    resources: ["nodes", "persistentvolumes"]
+    verbs: ["get", "list", "watch"]
+  # Cannot modify RBAC
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles", "rolebindings"]
+    verbs: ["get", "list", "watch"]
+
+---
+# 2.3 Role - Scoped to specific namespace (application team)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: app-team-role
+  namespace: app-team-ns
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "pods/exec", "services", "configmaps"]
+    verbs: ["get", "list", "watch", "create", "update", "delete"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list"]            # Read but not create/modify secrets
+    resourceNames: ["app-config"]     # Only specific secret
+
+---
+# 2.4 RoleBinding - Bind team to namespace role
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: app-team-binding
+  namespace: app-team-ns
+subjects:
+  # Bind to a group (from OIDC provider)
+  - kind: Group
+    name: app-team@company.io
+    apiGroup: rbac.authorization.k8s.io
+  # Bind specific user
+  - kind: User
+    name: dev@company.io
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: Role
+  name: app-team-role
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# 2.5 ClusterRoleBinding - Emergency break-glass access
+#     Time-limited, requires manual approval process.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: emergency-admin-access
+  annotations:
+    security.company.io/approved-by: "security-team"
+    security.company.io/expires: "2026-05-29T00:00:00Z"
+    security.company.io/ticket: "INC-12345"
+subjects:
+  - kind: User
+    name: oncall-engineer@company.io
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole
+  name: cluster-admin
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# 2.6 Aggregated ClusterRoles (composable permissions)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: monitoring-reader
+  labels:
+    # This gets aggregated into the "view" ClusterRole
+    rbac.authorization.k8s.io/aggregate-to-view: "true"
+rules:
+  - apiGroups: ["monitoring.coreos.com"]
+    resources: ["prometheusrules", "servicemonitors", "podmonitors"]
+    verbs: ["get", "list", "watch"]
+
+---
+# ############################################################
+# SECTION 3: OIDC Authentication (Azure AD / Okta / Keycloak)
+# ############################################################
+# Use external identity providers instead of certificates/tokens.
+#
+# Benefits:
+#   - Centralized user management
+#   - MFA enforcement
+#   - Automatic deprovisioning
+#   - Group-based RBAC
+#   - Audit trail in IdP
+#
+# kube-apiserver OIDC flags:
+# --oidc-issuer-url=https://login.microsoftonline.com/<tenant>/v2.0
+# --oidc-client-id=kubernetes-api
+# --oidc-username-claim=email
+# --oidc-username-prefix="oidc:"
+# --oidc-groups-claim=groups
+# --oidc-groups-prefix="oidc:"
+# --oidc-required-claim="aud=kubernetes-api"
+#
+# Kubeconfig for OIDC user:
+# users:
+# - name: developer
+#   user:
+#     exec:
+#       apiVersion: client.authentication.k8s.io/v1beta1
+#       command: kubelogin
+#       args:
+#         - get-token
+#         - --oidc-issuer-url=https://login.microsoftonline.com/<tenant>/v2.0
+#         - --oidc-client-id=kubernetes-api
+#         - --oidc-extra-scope=email,profile
+#       interactiveMode: IfAvailable
+
+---
+# ############################################################
+# SECTION 4: etcd Security
+# ############################################################
+# etcd stores ALL cluster state. Compromised etcd = game over.
+#
+# kube-apiserver → etcd flags:
+# --etcd-cafile=/etc/kubernetes/pki/etcd/ca.crt
+# --etcd-certfile=/etc/kubernetes/pki/apiserver-etcd-client.crt
+# --etcd-keyfile=/etc/kubernetes/pki/apiserver-etcd-client.key
+# --etcd-servers=https://etcd-0:2379,https://etcd-1:2379,https://etcd-2:2379
+#
+# etcd server flags:
+# --client-cert-auth=true
+# --trusted-ca-file=/etc/kubernetes/pki/etcd/ca.crt
+# --cert-file=/etc/kubernetes/pki/etcd/server.crt
+# --key-file=/etc/kubernetes/pki/etcd/server.key
+# --peer-client-cert-auth=true
+# --peer-trusted-ca-file=/etc/kubernetes/pki/etcd/ca.crt
+# --peer-cert-file=/etc/kubernetes/pki/etcd/peer.crt
+# --peer-key-file=/etc/kubernetes/pki/etcd/peer.key
+# --listen-client-urls=https://127.0.0.1:2379  # Only localhost
+# --cipher-suites=TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+#
+# Security checklist for etcd:
+#   [ ] Run etcd on dedicated nodes (not shared with workloads)
+#   [ ] mTLS for client and peer communication
+#   [ ] Encrypt data at rest (EncryptionConfiguration)
+#   [ ] Limit network access (firewall rules)
+#   [ ] Regular automated backups
+#   [ ] Access only via kube-apiserver (no direct etcdctl in production)
+#   [ ] etcd data directory permissions: 700
+
+---
+# ############################################################
+# SECTION 5: Admission Controllers & Webhooks
+# ############################################################
+# Admission controllers intercept API requests AFTER auth
+# but BEFORE persistence. They validate and mutate objects.
+
+# 5.1 ValidatingAdmissionPolicy (k8s 1.30+ native, no webhooks)
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: require-labels
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["apps"]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["deployments"]
+  validations:
+    - expression: "has(object.metadata.labels) && 'app' in object.metadata.labels"
+      message: "All deployments must have an 'app' label"
+    - expression: "has(object.metadata.labels) && 'team' in object.metadata.labels"
+      message: "All deployments must have a 'team' label for ownership"
+    - expression: "object.spec.replicas >= 2"
+      message: "Production deployments must have at least 2 replicas"
+
+---
+# 5.2 ValidatingAdmissionPolicyBinding
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: require-labels-binding
+spec:
+  policyName: require-labels
+  validationActions: [Deny, Audit]
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        environment: production       # Only enforce in production namespaces
+
+---
+# 5.3 ValidatingWebhookConfiguration (external webhook)
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: security-webhook
+webhooks:
+  - name: validate.security.company.io
+    admissionReviewVersions: ["v1"]
+    sideEffects: None
+    timeoutSeconds: 5                  # Fail fast
+    failurePolicy: Fail                # Reject if webhook unavailable
+    clientConfig:
+      service:
+        name: security-webhook-service
+        namespace: security
+        path: /validate
+      caBundle: <base64-ca-cert>
+    rules:
+      - operations: ["CREATE", "UPDATE"]
+        apiGroups: ["", "apps"]
+        apiVersions: ["v1"]
+        resources: ["pods", "deployments"]
+    namespaceSelector:
+      matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: NotIn
+          values: ["kube-system"]      # Skip kube-system
+
+---
+# 5.4 MutatingWebhookConfiguration (inject sidecars, labels)
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: inject-security-defaults
+webhooks:
+  - name: mutate.security.company.io
+    admissionReviewVersions: ["v1"]
+    sideEffects: None
+    timeoutSeconds: 5
+    failurePolicy: Ignore              # Don't block if webhook is down
+    reinvocationPolicy: IfNeeded       # Re-run if object changed by other webhook
+    clientConfig:
+      service:
+        name: mutation-webhook-service
+        namespace: security
+        path: /mutate
+      caBundle: <base64-ca-cert>
+    rules:
+      - operations: ["CREATE"]
+        apiGroups: [""]
+        apiVersions: ["v1"]
+        resources: ["pods"]
+
+---
+# ############################################################
+# SECTION 6: Service Mesh Security (Istio mTLS)
+# ############################################################
+# Service mesh provides automatic mTLS between all pods,
+# traffic policies, and observability.
+
+# 6.1 Istio PeerAuthentication - Enforce strict mTLS cluster-wide
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata:
+  name: default
+  namespace: istio-system              # Cluster-wide when in istio-system
+spec:
+  mtls:
+    mode: STRICT                       # All traffic MUST be mTLS
+
+---
+# 6.2 Istio PeerAuthentication - Per-namespace
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata:
+  name: production-mtls
+  namespace: production
+spec:
+  mtls:
+    mode: STRICT
+  # Per-port exception (for health checks from non-mesh sources)
+  portLevelMtls:
+    8080:
+      mode: PERMISSIVE                 # Allow plain HTTP on port 8080
+
+---
+# 6.3 Istio AuthorizationPolicy - Allow specific service-to-service
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-frontend-to-api
+  namespace: production
+spec:
+  selector:
+    matchLabels:
+      app: api-service
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            principals: ["cluster.local/ns/production/sa/frontend-sa"]
+            namespaces: ["production"]
+      to:
+        - operation:
+            methods: ["GET", "POST"]
+            paths: ["/api/v1/*"]
+      when:
+        - key: request.headers[x-request-id]
+          notValues: [""]              # Require request ID header
+
+---
+# 6.4 Istio AuthorizationPolicy - Deny all by default
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: deny-all
+  namespace: production
+spec:
+  {}                                   # Empty spec = deny all traffic
+
+---
+# 6.5 Istio RequestAuthentication (JWT validation)
+apiVersion: security.istio.io/v1
+kind: RequestAuthentication
+metadata:
+  name: jwt-auth
+  namespace: production
+spec:
+  selector:
+    matchLabels:
+      app: api-service
+  jwtRules:
+    - issuer: "https://idp.company.io"
+      jwksUri: "https://idp.company.io/.well-known/jwks.json"
+      audiences: ["api-service"]
+      forwardOriginalToken: true
+      outputPayloadToHeader: "x-jwt-payload"
+
+---
+# ############################################################
+# SECTION 7: Multi-Tenancy Isolation
+# ############################################################
+# Isolate different teams/customers sharing the same cluster.
+
+# 7.1 Namespace with full isolation configuration
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tenant-alpha
+  labels:
+    tenant: alpha
+    environment: production
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+  annotations:
+    scheduler.alpha.kubernetes.io/node-selector: "tenant=alpha"
+
+---
+# 7.2 ResourceQuota per tenant
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: tenant-alpha-quota
+  namespace: tenant-alpha
+spec:
+  hard:
+    requests.cpu: "8"
+    requests.memory: "16Gi"
+    limits.cpu: "16"
+    limits.memory: "32Gi"
+    pods: "50"
+    services: "20"
+    persistentvolumeclaims: "20"
+    count/deployments.apps: "20"
+    count/statefulsets.apps: "10"
+    count/jobs.batch: "30"
+    count/secrets: "50"
+    count/configmaps: "50"
+
+---
+# 7.3 LimitRange per tenant (enforce per-container limits)
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: tenant-alpha-limits
+  namespace: tenant-alpha
+spec:
+  limits:
+    - type: Container
+      default:
+        cpu: "500m"
+        memory: "256Mi"
+      defaultRequest:
+        cpu: "100m"
+        memory: "128Mi"
+      max:
+        cpu: "4"
+        memory: "4Gi"
+      min:
+        cpu: "50m"
+        memory: "64Mi"
+    - type: PersistentVolumeClaim
+      max:
+        storage: "50Gi"
+      min:
+        storage: "1Gi"
+
+---
+# 7.4 NetworkPolicy - Isolate tenant namespace completely
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: tenant-isolation
+  namespace: tenant-alpha
+spec:
+  podSelector: {}                     # All pods in namespace
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Only allow traffic from same namespace
+    - from:
+        - podSelector: {}
+    # Allow from ingress controller namespace
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: ingress-nginx
+  egress:
+    # DNS
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+    # Same namespace
+    - to:
+        - podSelector: {}
+    # External HTTPS only
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443
+
+---
+# ############################################################
+# SECTION 8: External Secrets Management
+# ############################################################
+# Never store secrets directly in etcd. Use external vaults.
+
+# 8.1 External Secrets Operator - SecretStore (AWS Secrets Manager)
+apiVersion: external-secrets.io/v1beta1
+kind: SecretStore
+metadata:
+  name: aws-secrets-manager
+  namespace: production
+spec:
+  provider:
+    aws:
+      service: SecretsManager
+      region: us-east-1
+      auth:
+        jwt:
+          serviceAccountRef:
+            name: external-secrets-sa  # Uses IRSA (IAM Roles for SA)
+
+---
+# 8.2 ExternalSecret - Sync from AWS Secrets Manager
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: database-credentials
+  namespace: production
+spec:
+  refreshInterval: "1h"              # Rotate every hour
+  secretStoreRef:
+    name: aws-secrets-manager
+    kind: SecretStore
+  target:
+    name: db-credentials             # K8s Secret name to create
+    creationPolicy: Owner
+    deletionPolicy: Delete
+  data:
+    - secretKey: username
+      remoteRef:
+        key: production/database
+        property: username
+    - secretKey: password
+      remoteRef:
+        key: production/database
+        property: password
+
+---
+# 8.3 SecretStore for HashiCorp Vault
+apiVersion: external-secrets.io/v1beta1
+kind: SecretStore
+metadata:
+  name: vault-store
+  namespace: production
+spec:
+  provider:
+    vault:
+      server: "https://vault.company.io:8200"
+      path: "secret"
+      version: "v2"
+      auth:
+        kubernetes:
+          mountPath: "kubernetes"
+          role: "production-app"
+          serviceAccountRef:
+            name: vault-auth-sa
+
+---
+# 8.4 Sealed Secrets (for GitOps - encrypted in Git)
+apiVersion: bitnami.com/v1alpha1
+kind: SealedSecret
+metadata:
+  name: sealed-db-secret
+  namespace: production
+spec:
+  encryptedData:
+    # Values encrypted with cluster's public key
+    # Only the cluster's Sealed Secrets controller can decrypt
+    username: AgBy3i4OJSWK+PiTySYZZA9rO43cGDEq...
+    password: AgCtr8YJSWK+PiTySYZZA9rO43cGDEq...
+  template:
+    metadata:
+      name: db-secret
+      namespace: production
+    type: Opaque
+
+# Seal a secret:
+#   kubeseal --format=yaml < secret.yaml > sealed-secret.yaml
+#   kubeseal --fetch-cert > pub-cert.pem  # Get public cert for CI/CD
+
+---
+# ############################################################
+# SECTION 9: Supply Chain Security (Image Signing & SBOM)
+# ############################################################
+# Verify that container images are trusted and unmodified.
+
+# 9.1 Cosign image verification policy (Kyverno)
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: verify-image-signatures
+  annotations:
+    policies.kyverno.io/title: Verify Image Signatures
+    policies.kyverno.io/severity: critical
+spec:
+  validationFailureAction: Enforce
+  webhookTimeoutSeconds: 30
+  rules:
+    - name: verify-cosign-signature
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      verifyImages:
+        - imageReferences:
+            - "registry.company.io/*"
+          attestors:
+            - entries:
+                - keys:
+                    publicKeys: |-
+                      -----BEGIN PUBLIC KEY-----
+                      MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE...
+                      -----END PUBLIC KEY-----
+          mutateDigest: true           # Replace tag with digest
+          verifyDigest: true           # Verify digest matches
+
+---
+# 9.2 Sigstore policy-controller (alternative to Kyverno)
+apiVersion: policy.sigstore.dev/v1beta1
+kind: ClusterImagePolicy
+metadata:
+  name: require-signed-images
+spec:
+  images:
+    - glob: "registry.company.io/**"
+    - glob: "docker.io/library/**"
+  authorities:
+    - key:
+        data: |
+          -----BEGIN PUBLIC KEY-----
+          MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE...
+          -----END PUBLIC KEY-----
+    - keyless:
+        url: https://fulcio.sigstore.dev
+        identities:
+          - issuer: "https://accounts.google.com"
+            subject: "build-pipeline@company.iam.gserviceaccount.com"
+
+---
+# 9.3 Restrict image registries (Kyverno)
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: restrict-image-registries
+spec:
+  validationFailureAction: Enforce
+  rules:
+    - name: allowed-registries
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      validate:
+        message: "Images must come from approved registries"
+        pattern:
+          spec:
+            containers:
+              - image: "registry.company.io/* | gcr.io/distroless/*"
+            initContainers:
+              - image: "registry.company.io/* | gcr.io/distroless/*"
+
+---
+# ############################################################
+# SECTION 10: API Server Access Control (API Priority & Fairness)
+# ############################################################
+# Protects API server from overload and ensures critical
+# requests are prioritized.
+
+# 10.1 PriorityLevelConfiguration - Critical system requests
+apiVersion: flowcontrol.apiserver.k8s.io/v1
+kind: PriorityLevelConfiguration
+metadata:
+  name: system-critical
+spec:
+  type: Limited
+  limited:
+    nominalConcurrencyShares: 40     # High priority share
+    limitResponse:
+      type: Queue
+      queuing:
+        queues: 64
+        handSize: 8
+        queueLengthLimit: 50
+
+---
+# 10.2 FlowSchema - Prioritize health checks
+apiVersion: flowcontrol.apiserver.k8s.io/v1
+kind: FlowSchema
+metadata:
+  name: health-check-priority
+spec:
+  priorityLevelConfiguration:
+    name: system-critical
+  matchingPrecedence: 100
+  rules:
+    - subjects:
+        - kind: ServiceAccount
+          serviceAccount:
+            name: kube-controller-manager
+            namespace: kube-system
+      nonResourceRules:
+        - verbs: ["get"]
+          nonResourceURLs: ["/healthz", "/readyz", "/livez"]
+
+---
+# ############################################################
+# SECTION 11: Cluster Backup Security (Velero)
+# ############################################################
+# Secure backup and disaster recovery.
+
+# 11.1 Velero Schedule with encryption
+apiVersion: velero.io/v1
+kind: Schedule
+metadata:
+  name: daily-cluster-backup
+  namespace: velero
+spec:
+  schedule: "0 2 * * *"              # Daily at 2 AM
+  template:
+    # Include everything
+    includedNamespaces:
+      - "*"
+    excludedNamespaces:
+      - velero
+    # Exclude sensitive transient data
+    excludedResources:
+      - events
+      - events.events.k8s.io
+    storageLocation: encrypted-s3
+    ttl: "720h"                      # Retain for 30 days
+    snapshotVolumes: true
+    defaultVolumesToFsBackup: true
+  useOwnerReferencesInBackup: false
+
+---
+# 11.2 BackupStorageLocation with encryption
+apiVersion: velero.io/v1
+kind: BackupStorageLocation
+metadata:
+  name: encrypted-s3
+  namespace: velero
+spec:
+  provider: aws
+  objectStorage:
+    bucket: company-k8s-backups
+    prefix: cluster-prod
+  config:
+    region: us-east-1
+    s3ForcePathStyle: "false"
+    serverSideEncryption: "aws:kms"   # Encrypt backups with KMS
+    kmsKeyId: "arn:aws:kms:us-east-1:123456789:key/abc-123"
+  accessMode: ReadWrite
+  credential:
+    name: velero-aws-credentials
+    key: cloud
+
+---
+# ############################################################
+# SECTION 12: Monitoring & Alerting for Security Events
+# ############################################################
+
+# 12.1 PrometheusRule for security alerts
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: kubernetes-security-alerts
+  namespace: monitoring
+  labels:
+    release: prometheus
+spec:
+  groups:
+    - name: kubernetes-security
+      rules:
+        # Alert on privileged containers
+        - alert: PrivilegedContainerDetected
+          expr: |
+            kube_pod_container_status_running{} * on(pod, namespace)
+            group_left() kube_pod_spec_containers_security_context_privileged{} == 1
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Privileged container detected"
+            description: "Pod {{ $labels.pod }} in {{ $labels.namespace }} is running a privileged container"
+
+        # Alert on failed API auth attempts
+        - alert: HighAPIAuthFailures
+          expr: |
+            sum(rate(apiserver_authentication_attempts{result="failure"}[5m])) > 10
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: "High API authentication failures"
+            description: "More than 10 failed auth attempts per second in the last 5 minutes"
+
+        # Alert on cluster-admin usage
+        - alert: ClusterAdminBindingCreated
+          expr: |
+            increase(apiserver_audit_event_total{
+              verb="create",
+              resource="clusterrolebindings",
+              objectRef_name=~".*cluster-admin.*"
+            }[5m]) > 0
+          for: 0m
+          labels:
+            severity: critical
+          annotations:
+            summary: "New cluster-admin binding created"
+            description: "A new ClusterRoleBinding referencing cluster-admin was created"
+
+        # Alert on secret access anomalies
+        - alert: UnusualSecretAccess
+          expr: |
+            sum by (user) (
+              increase(apiserver_audit_event_total{
+                verb=~"get|list",
+                resource="secrets"
+              }[5m])
+            ) > 100
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Unusual secret access pattern"
+            description: "User {{ $labels.user }} accessed secrets > 100 times in 5 minutes"
+
+        # Alert on pod exec (potential lateral movement)
+        - alert: PodExecDetected
+          expr: |
+            increase(apiserver_audit_event_total{
+              verb="create",
+              resource="pods",
+              subresource="exec"
+            }[5m]) > 5
+          for: 1m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Multiple pod exec sessions detected"
+            description: "More than 5 exec sessions created in the last 5 minutes"
+
+---
+# ############################################################
+# SECTION 13: Cluster-Wide Network Policies (Cilium)
+# ############################################################
+# Cilium provides advanced L3-L7 network policies.
+
+# 13.1 CiliumClusterwideNetworkPolicy - DNS-aware egress
+apiVersion: cilium.io/v2
+kind: CiliumClusterwideNetworkPolicy
+metadata:
+  name: allow-dns-egress-only
+spec:
+  endpointSelector: {}
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+          rules:
+            dns:
+              - matchPattern: "*.company.io"
+              - matchPattern: "*.amazonaws.com"
+    # Allow HTTPS to specific FQDNs only
+    - toFQDNs:
+        - matchName: "api.stripe.com"
+        - matchName: "api.github.com"
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+
+---
+# 13.2 CiliumNetworkPolicy - L7 HTTP policy
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: api-l7-policy
+  namespace: production
+spec:
+  endpointSelector:
+    matchLabels:
+      app: api-service
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            app: frontend
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+          rules:
+            http:
+              - method: "GET"
+                path: "/api/v1/public/.*"
+              - method: "POST"
+                path: "/api/v1/data"
+                headers:
+                  - "Content-Type: application/json"
+
+---
+# ############################################################
+# SECTION 14: Cloud Provider IAM Integration
+# ############################################################
+
+# 14.1 AWS - IRSA (IAM Roles for Service Accounts)
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: s3-reader-sa
+  namespace: production
+  annotations:
+    # Pod assumes this IAM role automatically
+    eks.amazonaws.com/role-arn: arn:aws:iam::123456789:role/s3-reader-role
+    eks.amazonaws.com/sts-regional-endpoints: "true"
+
+---
+# 14.2 GCP - Workload Identity
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: gcs-reader-sa
+  namespace: production
+  annotations:
+    iam.gke.io/gcp-service-account: gcs-reader@project-id.iam.gserviceaccount.com
+
+---
+# 14.3 Azure - Workload Identity (Azure AD)
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: azure-reader-sa
+  namespace: production
+  annotations:
+    azure.workload.identity/client-id: "12345678-abcd-efgh-ijkl-123456789012"
+  labels:
+    azure.workload.identity/use: "true"
+
+---
+# ############################################################
+# SECTION 15: Kubernetes Upgrade Security Policy
+# ############################################################
+# Secure cluster upgrade process.
+#
+# Pre-upgrade checklist:
+#   [ ] Review release notes for security fixes
+#   [ ] Check deprecated API usage: kubectl get --raw /metrics | grep apiserver_requested_deprecated_apis
+#   [ ] Run: kubectl api-resources --verbs=list -o name | xargs -n1 kubectl get --show-kind --ignore-not-found -A
+#   [ ] Backup etcd: etcdctl snapshot save backup.db
+#   [ ] Backup cluster state: velero backup create pre-upgrade-$(date +%Y%m%d)
+#   [ ] Test upgrade in staging first
+#   [ ] Verify PSA labels are compatible with new version
+#   [ ] Check admission webhook compatibility
+#   [ ] Review NetworkPolicy API changes
+#
+# Upgrade order:
+#   1. etcd (if self-managed)
+#   2. kube-apiserver
+#   3. kube-controller-manager
+#   4. kube-scheduler
+#   5. kubelet (one node at a time)
+#   6. kube-proxy
+#
+# Post-upgrade verification:
+#   kubectl get nodes    # All nodes Ready
+#   kubectl get pods -A  # No CrashLoopBackOff
+#   kubectl get cs       # Component statuses healthy
+#   kubectl cluster-info
+#   kubectl auth can-i create pods --all-namespaces  # RBAC working
+
+---
+# ############################################################
+# SECTION 16: Security Contexts for Control Plane Components
+# ############################################################
+# Even control plane pods should follow security best practices.
+
+# 16.1 Hardened kube-proxy DaemonSet (example)
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: kube-proxy-hardened
+  namespace: kube-system
+spec:
+  selector:
+    matchLabels:
+      k8s-app: kube-proxy
+  template:
+    metadata:
+      labels:
+        k8s-app: kube-proxy
+    spec:
+      priorityClassName: system-node-critical
+      serviceAccountName: kube-proxy
+      hostNetwork: true                # Required for kube-proxy
+      tolerations:
+        - operator: Exists
+      containers:
+        - name: kube-proxy
+          image: registry.k8s.io/kube-proxy:v1.30.0
+          command:
+            - /usr/local/bin/kube-proxy
+            - --config=/var/lib/kube-proxy/config.conf
+            - --hostname-override=$(NODE_NAME)
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          securityContext:
+            privileged: false
+            capabilities:
+              add: ["NET_ADMIN", "SYS_RESOURCE"]
+              drop: ["ALL"]
+          volumeMounts:
+            - name: kube-proxy-config
+              mountPath: /var/lib/kube-proxy
+            - name: xtables-lock
+              mountPath: /run/xtables.lock
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+      volumes:
+        - name: kube-proxy-config
+          configMap:
+            name: kube-proxy
+        - name: xtables-lock
+          hostPath:
+            path: /run/xtables.lock
+            type: FileOrCreate
+
+---
+# ############################################################
+# SECTION 17: Kubernetes Security Scanning (Trivy Operator)
+# ############################################################
+
+# 17.1 Trivy Operator scans running workloads for vulnerabilities
+# Install: helm install trivy-operator aquasecurity/trivy-operator -n trivy-system
+#
+# ConfigAuditReport - checks misconfigurations
+# VulnerabilityReport - scans images for CVEs
+# ExposedSecretReport - detects leaked secrets in images
+# RbacAssessmentReport - evaluates RBAC risks
+
+# 17.2 Example VulnerabilityReport (auto-generated by Trivy Operator)
+# kubectl get vulnerabilityreports -A
+# kubectl get configauditreports -A
+# kubectl get rbacassessmentreports -A
+
+---
+# ############################################################
+# SECTION 18: Pod-to-Pod Encryption Without Service Mesh
+# ############################################################
+# Use WireGuard with Cilium or Calico for transparent encryption.
+
+# 18.1 Calico WireGuard encryption (IPsec alternative)
+# Enable in Calico FelixConfiguration:
+apiVersion: projectcalico.org/v3
+kind: FelixConfiguration
+metadata:
+  name: default
+spec:
+  wireguardEnabled: true              # Enable WireGuard for pod traffic
+  wireguardEnabledV6: true            # IPv6 support
+  wireguardListeningPort: 51820
+  # All pod-to-pod traffic is now encrypted at L3
+  # No application changes needed
+
+---
+# ############################################################
+# SECTION 19: Cluster Federation Security
+# ############################################################
+# When connecting multiple clusters, secure cross-cluster access.
+#
+# Multi-cluster security principles:
+#   - Each cluster has its own CA (don't share CAs)
+#   - Cross-cluster auth via OIDC or intermediate trust
+#   - Network tunnels encrypted (WireGuard, IPsec)
+#   - Limit cross-cluster RBAC (don't share cluster-admin)
+#   - Audit cross-cluster API access separately
+#
+# KubeFed placement policy:
+# apiVersion: types.kubefed.io/v1beta1
+# kind: FederatedDeployment
+# metadata:
+#   name: secure-app
+#   namespace: production
+# spec:
+#   placement:
+#     clusters:
+#       - name: cluster-us-east
+#       - name: cluster-eu-west
+#     clusterSelector:
+#       matchLabels:
+#         security-clearance: "high"
+
+---
+# ############################################################
+# SECTION 20: Incident Response Automation
+# ############################################################
+# Automatically respond to security incidents.
+
+# 20.1 Falco response engine - auto-kill compromised pods
+# Falcosidekick configuration:
+# config:
+#   kubernetes:
+#     # Auto-delete pods that trigger critical Falco rules
+#     enabled: true
+#     minimumPriority: "critical"
+#     actions:
+#       - delete           # Delete the offending pod
+#       - label            # Label for investigation
+#     labels:
+#       security-incident: "true"
+#       kill-reason: "falco-rule-triggered"
+
+# 20.2 Kubernetes Event-Driven Autoscaling (KEDA) for incident response
+# Trigger scaling to zero when attack detected:
+# apiVersion: keda.sh/v1alpha1
+# kind: ScaledObject
+# metadata:
+#   name: incident-response
+#   namespace: production
+# spec:
+#   scaleTargetRef:
+#     name: compromised-deployment
+#   minReplicaCount: 0               # Scale to zero during incident
+#   triggers:
+#     - type: prometheus
+#       metadata:
+#         query: "falco_events_total{priority='Critical'} > 0"
+#         threshold: "1"
+
+
+# ############################################################
+# QUICK REFERENCE: Cluster Security Commands
+# ############################################################
+#
+# --- RBAC debugging ---
+# kubectl auth can-i --list --as=user@company.io
+# kubectl auth can-i create pods --as=system:serviceaccount:ns:sa-name
+# kubectl auth whoami  # (k8s 1.30+)
+# kubectl get clusterrolebindings -o json | jq '.items[] | select(.roleRef.name=="cluster-admin") | .subjects'
+#
+# --- Find overly permissive RBAC ---
+# kubectl get clusterrolebindings -o json | jq -r '.items[] | select(.roleRef.name=="cluster-admin") | .metadata.name'
+# kubectl get rolebindings,clusterrolebindings --all-namespaces -o json | jq '.items[].subjects[]?.name'
+#
+# --- API server audit ---
+# cat /var/log/kubernetes/audit.log | jq 'select(.verb=="create" and .objectRef.resource=="secrets")'
+#
+# --- Check deprecated API usage ---
+# kubectl get --raw /metrics | grep apiserver_requested_deprecated_apis
+#
+# --- Encryption at rest verification ---
+# kubectl get secrets -A -o json | kubectl replace -f -  # Force re-encryption
+# etcdctl get /registry/secrets/default/my-secret | hexdump -C  # Should be encrypted
+#
+# --- Service mesh status ---
+# istioctl analyze -A
+# istioctl proxy-status
+#
+# --- Vulnerability scanning ---
+# kubectl get vulnerabilityreports -A --sort-by='.report.summary.criticalCount'
+# trivy k8s --report=summary cluster
+#
+# --- Seal a secret for GitOps ---
+# kubeseal --format=yaml < secret.yaml > sealed-secret.yaml
+#
+# --- Check admission webhooks ---
+# kubectl get validatingwebhookconfigurations
+# kubectl get mutatingwebhookconfigurations
+#
+# --- Network policy testing ---
+# kubectl run nettest --rm -it --image=nicolaka/netshoot -- bash
+# nmap -sT <service-ip> -p 1-65535
+#
+# --- Backup verification ---
+# velero backup get
+# velero restore create --from-backup <name> --include-namespaces test-restore
+#
+# ############################################################
+# CLUSTER SECURITY CHECKLIST
+# ############################################################
+#
+# API Server:
+#   [ ] Anonymous auth disabled
+#   [ ] OIDC authentication configured (no static tokens)
+#   [ ] Authorization mode = Node,RBAC
+#   [ ] All recommended admission controllers enabled
+#   [ ] TLS 1.2+ with strong cipher suites
+#   [ ] Audit logging enabled
+#   [ ] Profiling disabled
+#   [ ] Rate limiting configured (APF)
+#   [ ] Request timeout set
+#
+# RBAC:
+#   [ ] No unnecessary cluster-admin bindings
+#   [ ] Service accounts have minimal permissions
+#   [ ] Namespace-scoped roles preferred over cluster roles
+#   [ ] Regular RBAC audit (rbac-police, rbac-lookup tools)
+#   [ ] Break-glass procedure documented and time-limited
+#
+# etcd:
+#   [ ] mTLS for client and peer connections
+#   [ ] Encryption at rest (KMS preferred)
+#   [ ] Access restricted to API server only
+#   [ ] Regular automated backups
+#   [ ] Runs on dedicated nodes
+#
+# Secrets:
+#   [ ] External secrets manager (Vault, AWS SM, Azure KV)
+#   [ ] No secrets in source code or CI/CD variables
+#   [ ] Sealed Secrets for GitOps workflows
+#   [ ] Secret rotation policy enforced
+#
+# Network:
+#   [ ] Service mesh with strict mTLS (Istio/Linkerd)
+#   [ ] Network policies with default deny
+#   [ ] Pod-to-pod encryption (WireGuard/IPsec)
+#   [ ] DNS policies restricting external resolution
+#   [ ] L7 policies for API-level control
+#
+# Supply Chain:
+#   [ ] Image signing enforced (Cosign/Notation)
+#   [ ] Allowed registries restricted
+#   [ ] Vulnerability scanning (Trivy Operator)
+#   [ ] SBOM generation and verification
+#   [ ] No :latest tags allowed
+#
+# Multi-Tenancy:
+#   [ ] Namespace isolation (NetworkPolicy + RBAC + ResourceQuota)
+#   [ ] Pod Security Admission at restricted level
+#   [ ] LimitRange per namespace
+#   [ ] Tenant-specific node pools (taints)
+#
+# Operations:
+#   [ ] Cluster upgrade SOP documented
+#   [ ] Backup and restore tested
+#   [ ] Incident response automation
+#   [ ] Security monitoring alerts configured
+#   [ ] Regular CIS benchmark scans
+#   [ ] Deprecated API migration planned
+#
