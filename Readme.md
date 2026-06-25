@@ -6,13 +6,14 @@ A structured set of annotated YAML files for learning Kubernetes concepts, organ
 
 ## 📂 Kubernetes Repository Structure
 
-* [📄 Cluster-Architecture.yaml](Cluster-Architecture.md) — *Control plane, node components, add-ons*
-* [📁 Installation](https://www.google.com/search?q=%23installation)
-* [📁 Workloads](https://www.google.com/search?q=%23workloads)
-* [📁 Configuration](https://www.google.com/search?q=%23configuration)
-* [📁 Storage](https://www.google.com/search?q=%23storage)
-* [📁 Networking](https://www.google.com/search?q=%23networking)
-
+* [📄 Cluster-Architecture](1-Cluster-Architecture.md) — *Control plane, node components, add-ons*
+* [📁 Installation](Installation)
+* [📁 Workloads](2-Workloads)
+* [📁 Storage](3-Storage)
+* [📁 Networking](4-Networking)
+* [📁 Configuration](5-Configuration)
+* [📁 Security](6-Security)
+* [📁 Real Example and Error](7-Real-Example-Error)
 ---
 
 ### 📄 Cluster-Architecture.yaml
