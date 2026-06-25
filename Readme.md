@@ -48,7 +48,81 @@ kubernetes/
     ├── svc-LoadBalancer.yaml   Cloud LB (AWS NLB, Azure, GKE, MetalLB)
     └── svc-ExternalName.yaml   DNS alias / CNAME for external services
 ```
+Here is your directory structure, transformed into a clean, interactive, and visually distinct layout. I have added anchor links so you can easily navigate between the folders and files.
 
+---
+
+## 📂 Kubernetes Repository Structure
+
+* [📄 Cluster-Architecture.yaml](https://www.google.com/search?q=%23cluster-architectureyaml) — *Control plane, node components, add-ons*
+* [📁 Installation](https://www.google.com/search?q=%23installation)
+* [📁 Workloads](https://www.google.com/search?q=%23workloads)
+* [📁 Configuration](https://www.google.com/search?q=%23configuration)
+* [📁 Storage](https://www.google.com/search?q=%23storage)
+* [📁 Networking](https://www.google.com/search?q=%23networking)
+
+---
+
+### 📄 Cluster-Architecture.yaml
+
+* **Purpose:** Core components including the Control Plane, worker nodes, and essential cluster add-ons.
+
+### 📁 Installation
+
+> Setup and bootstrap guides for various cloud providers and local environments.
+
+* [📄 Readme.md](https://www.google.com/search?q=%23installation)
+* `local-installation.yaml` — *Minikube, Kind, K3s, K3d*
+* `eks.yaml` — *AWS EKS (eksctl ClusterConfig)*
+* `aks.yaml` — *Azure AKS (az CLI + ARM reference)*
+* `gks.yaml` — *Google GKE (gcloud CLI + Config Connector)*
+
+### 📁 Workloads
+
+> Configuration files for managing and running containerized applications.
+
+* `Deployment.yaml` — *Rolling updates, Recreate, node affinity, canary deployments*
+* `StatefulSet.yaml` — *Stable network identity, ordered scaling (e.g., MySQL, ZooKeeper)*
+* `DaemonSet.yaml` — *One pod per node (e.g., fluentd log collectors, GPU plugins)*
+* `CronJob.yaml` — *Jobs, parallel/indexed execution, and automated cron schedules*
+* `Init-Containers.yaml` — *Pre-start initialization tasks and dependency blocking*
+* `Sidecar-Containers.yaml` — *Log shippers, service proxies, and native sidecars*
+* `Namespace.yaml` — *Soft isolation, ResourceQuotas, LimitRanges, NetworkPolicies*
+* `Others.yaml` — *Pods, ReplicaSets, SecurityContexts, HPAs, PDBs, PriorityClasses*
+
+### 📁 Configuration
+
+> Externalizing application settings, secrets, and health checks.
+
+* [📄 Readme.md](https://www.google.com/search?q=%23configuration)
+* `ConfigMaps.yaml` — *Non-sensitive configurations, environment variables, volume mounts*
+* `Secrets.yaml` — *Sensitive data, TLS certs, Docker registries, SSH keys*
+* `Liveness,-Readiness-Startup-Probes.yaml` — *HTTP, Exec, TCP, and gRPC health checks*
+* `Resource-Management-for-Pods-Containers.yaml` — *Compute requests/limits, QoS classes, LimitRanges*
+
+### 📁 Storage
+
+> Managing persistent, ephemeral, and dynamic storage states.
+
+* [📄 Readme.md](https://www.google.com/search?q=%23storage)
+* `Volumes.yaml` — *emptyDir, hostPath, configMap, secret, downwardAPI*
+* `Persistent-Volumes.yaml` — *Static PV definitions (NFS, EBS, Azure Disk, GCE)*
+* `PVC.yaml` — *Persistent Volume Claims, snapshots, and online volume expansion*
+* `Storage-Classes.yaml` — *Dynamic volume provisioning (gp3, standard Azure/GKE, MetalLB)*
+
+### 📁 Networking
+
+> Exposing applications and routing traffic within or outside the cluster.
+
+* [📄 Readme.md](https://www.google.com/search?q=%23networking)
+* `svc-ClusterIP.yaml` — *Internal cluster routing, headless services, manual Endpoints*
+* `svc-NodePort.yaml` — *Exposing services on static node ports (30000-32767)*
+* `svc-LoadBalancer.yaml` — *Cloud-integrated load balancers (AWS NLB, Azure, GKE, MetalLB)*
+* `svc-ExternalName.yaml` — *DNS aliases and CNAME records pointing to external services*
+
+---
+
+Are you building out a reference repository for your team, or are you looking to generate the actual starter YAML files for these folders?
 ---
 
 ## Learning Path
