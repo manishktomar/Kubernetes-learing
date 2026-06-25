@@ -10,7 +10,7 @@ A structured set of annotated YAML files for learning Kubernetes concepts, organ
 kubernetes/
 ├── Cluster-Architecture.yaml   Control plane, node components, add-ons
 │
-├── [Installation](.Installation/Readme.md)             How to get a cluster running
+├── [Installation](/Installation/Readme.md)             How to get a cluster running
 │   ├── Readme.md
 │   ├── local-installation.yaml Minikube, kind, k3s, k3d
 │   ├── eks.yaml                AWS EKS (eksctl ClusterConfig)
