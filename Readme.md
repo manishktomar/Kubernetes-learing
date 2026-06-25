@@ -1,191 +1,181 @@
-Here is the complete, raw markdown code for your `README.md`. You can copy everything inside the block below and paste it directly into your file:
-
-```markdown
-# ☸️ Kubernetes Learning Reference
+# Kubernetes Learning Reference
 
 A structured set of annotated YAML files for learning Kubernetes concepts, organized by topic. Each file contains multiple real-world examples with inline comments explaining every important field.
 
 ---
 
-## 🗺️ Learning Path
-
-Follow this structured roadmap to master the Kubernetes ecosystem systematically:
-
-1. **Cluster Architecture** — Understand what components exist and why.
-2. **Installation** — Get a local cluster running (Minikube, Kind, K3s, or K3d).
-3. **Workloads / Deployment** — Deploy your very first containerized application.
-4. **Networking / ClusterIP + NodePort** — Route internal traffic and expose your app.
-5. **Configuration / ConfigMaps + Secrets** — Externalize configuration and sensitive variables.
-6. **Storage / Volumes + PVC** — Introduce persistent storage states.
-7. **Workloads / StatefulSet** — Spin up stateful applications like databases (MySQL, ZooKeeper).
-8. **Configuration / Probes** — Implement health checks (Liveness, Readiness, Startup).
-9. **Configuration / Resources** — Define hard compute constraints (Requests and Limits).
-10. **Workloads / CronJob** — Schedule automated batch execution processes.
-11. **Workloads / DaemonSet** — Run universal, cluster-wide background agents.
-12. **Networking / LoadBalancer** — Expose your services natively to the public internet.
-13. **Workloads / Others** — Scale and protect workloads using HPA, PDB, and SecurityContexts.
-
----
-
 ## 📂 Kubernetes Repository Structure
 
-Use the interactive directory mapping below to navigate directly to specific configuration templates.
-
-* [🏛️ Cluster Architecture](#-cluster-architecture) — *Control plane, node components, add-ons*
-* [🚀 Installation & Bootstrapping](#-installation--bootstrapping) — *How to get a cluster running*
-* [📦 Workloads & Orchestration](#-workloads--orchestration) — *Running containerized applications*
-* [⚙️ Configuration & Security](#%EF%B8%8F-configuration--security) — *Externalizing app config and health*
-* [💾 Storage Subsystems](#-storage-subsystems) — *Persistent and ephemeral storage*
-* [🌐 Cluster Networking](#-cluster-networking) — *Services and cluster networking*
+* [📄 Cluster-Architecture.yaml](Cluster-Architecture.md) — *Control plane, node components, add-ons*
+* [📁 Installation](https://www.google.com/search?q=%23installation)
+* [📁 Workloads](https://www.google.com/search?q=%23workloads)
+* [📁 Configuration](https://www.google.com/search?q=%23configuration)
+* [📁 Storage](https://www.google.com/search?q=%23storage)
+* [📁 Networking](https://www.google.com/search?q=%23networking)
 
 ---
 
-### 🏛️ Cluster Architecture
-* **File:** `Cluster-Architecture.yaml`
-* **Focus:** Deep dive into Control Plane internals, worker node operations, and baseline cluster add-ons.
+### 📄 Cluster-Architecture.yaml
 
-### 🚀 Installation & Bootstrapping
-> Setup and bootstrap configurations for various cloud providers and local sandboxes.
-* 📋 `Readme.md` — Environment setup instructions.
-* 💻 `local-installation.yaml` — Local cluster scripts for **Minikube**, **Kind**, **K3s**, and **K3d**.
-* ☁️ `eks.yaml` — AWS EKS infrastructure using declarative `eksctl` ClusterConfigs.
-* ☁️ `aks.yaml` — Azure AKS configuration via `az CLI` instructions and ARM syntax.
-* ☁️ `gks.yaml` — Google GKE deployment setups via `gcloud CLI` and Config Connector specs.
+* **Purpose:** Core components including the Control Plane, worker nodes, and essential cluster add-ons.
 
-### 📦 Workloads & Orchestration
-> Resource configurations for scheduling, executing, and scaling container state models.
-* 📄 `Deployment.yaml` — Rolling updates, Recreate strategies, node affinity configurations, and canary rollouts.
-* 📄 `StatefulSet.yaml` — Stable network identifiers, ordinal scaling arrays, and persistent database clustering.
-* 📄 `DaemonSet.yaml` — Node-locked singleton instances (e.g., fluentd log collectors, GPU hardware access plugins).
-* 📄 `CronJob.yaml` — Run-to-completion Jobs, parallel/indexed batch executions, and cron interval engines.
-* 📄 `Init-Containers.yaml` — Blocking pre-start dependency validation routines.
-* 📄 `Sidecar-Containers.yaml` — Operational sidecars, log shippers, proxies, and Kubernetes native sidecar lifecycles.
-* 📄 `Namespace.yaml` — Hard isolation, resource constraints (`ResourceQuota`), range limits (`LimitRange`), and `NetworkPolicies`.
-* 📄 `Others.yaml` — Primitive items: Pods, ReplicaSets, `SecurityContext` parameters, `HPA`, `PDB`, and `PriorityClass`.
+### 📁 Installation
 
-### ⚙️ Configuration & Security
-> Decoupling application business logic from structural environments and secrets.
-* 📋 `Readme.md` — Configuration architecture workflows.
-* 📄 `ConfigMaps.yaml` — Plaintext properties maps, application settings files, and volume environment attachments.
-* 📄 `Secrets.yaml` — Base64 hidden keys, TLS keys, private Docker Registry auth blocks, and SSH configurations.
-* 📄 `Liveness,-Readiness-Startup-Probes.yaml` — Application health evaluation using HTTP, Exec, TCP, and gRPC endpoints.
-* 📄 `Resource-Management-for-Pods-Containers.yaml` — Microcompute controls via CPU/Memory requests/limits and QoS policies.
+> Setup and bootstrap guides for various cloud providers and local environments.
 
-### 💾 Storage Subsystems
-> Declaring persistent storage states and dynamic runtime attachments.
-* 📋 `Readme.md` — Decoupling persistent storage layers.
-* 📄 `Volumes.yaml` — Ephemeral internal storage mounts (`emptyDir`, `hostPath`, `configMap`, `secret`, `downwardAPI`).
-* 📄 `Persistent-Volumes.yaml` — Infrastructure storage objects (NFS, EBS, Azure Disk, GCE Persistent Disk).
-* 📄 `PVC.yaml` — Consumption request profiles, snapshot configurations, and volume extension setups.
-* 📄 `Storage-Classes.yaml` — Automated structural storage providers (`gp3`, Azure managed, GKE storage systems).
+* [📄 Readme.md](https://www.google.com/search?q=%23installation)
+* `local-installation.yaml` — *Minikube, Kind, K3s, K3d*
+* `eks.yaml` — *AWS EKS (eksctl ClusterConfig)*
+* `aks.yaml` — *Azure AKS (az CLI + ARM reference)*
+* `gks.yaml` — *Google GKE (gcloud CLI + Config Connector)*
 
-### 🌐 Cluster Networking
-> Exposing ephemeral containers through reliable, load-balanced connectivity wrappers.
-* 📋 `Readme.md` — Pod-to-Pod and External-to-Internal networking topologies.
-* 📄 `svc-ClusterIP.yaml` — Internal load balancing, headless routing entries, and hardcoded manual endpoints.
-* 📄 `svc-NodePort.yaml` — Broad external port routing bindings directly on worker nodes (`30000-32767`).
-* 📄 `svc-LoadBalancer.yaml` — Auto-provisioned Layer-4 cloud load balancers (AWS NLB, Azure Load Balancer, MetalLB).
-* 📄 `svc-ExternalName.yaml` — Pure application-level CNAME aliases redirecting to outside domains (e.g., cloud databases).
+### 📁 Workloads
+
+> Configuration files for managing and running containerized applications.
+
+* `Deployment.yaml` — *Rolling updates, Recreate, node affinity, canary deployments*
+* `StatefulSet.yaml` — *Stable network identity, ordered scaling (e.g., MySQL, ZooKeeper)*
+* `DaemonSet.yaml` — *One pod per node (e.g., fluentd log collectors, GPU plugins)*
+* `CronJob.yaml` — *Jobs, parallel/indexed execution, and automated cron schedules*
+* `Init-Containers.yaml` — *Pre-start initialization tasks and dependency blocking*
+* `Sidecar-Containers.yaml` — *Log shippers, service proxies, and native sidecars*
+* `Namespace.yaml` — *Soft isolation, ResourceQuotas, LimitRanges, NetworkPolicies*
+* `Others.yaml` — *Pods, ReplicaSets, SecurityContexts, HPAs, PDBs, PriorityClasses*
+
+### 📁 Configuration
+
+> Externalizing application settings, secrets, and health checks.
+
+* [📄 Readme.md](https://www.google.com/search?q=%23configuration)
+* `ConfigMaps.yaml` — *Non-sensitive configurations, environment variables, volume mounts*
+* `Secrets.yaml` — *Sensitive data, TLS certs, Docker registries, SSH keys*
+* `Liveness,-Readiness-Startup-Probes.yaml` — *HTTP, Exec, TCP, and gRPC health checks*
+* `Resource-Management-for-Pods-Containers.yaml` — *Compute requests/limits, QoS classes, LimitRanges*
+
+### 📁 Storage
+
+> Managing persistent, ephemeral, and dynamic storage states.
+
+* [📄 Readme.md](https://www.google.com/search?q=%23storage)
+* `Volumes.yaml` — *emptyDir, hostPath, configMap, secret, downwardAPI*
+* `Persistent-Volumes.yaml` — *Static PV definitions (NFS, EBS, Azure Disk, GCE)*
+* `PVC.yaml` — *Persistent Volume Claims, snapshots, and online volume expansion*
+* `Storage-Classes.yaml` — *Dynamic volume provisioning (gp3, standard Azure/GKE, MetalLB)*
+
+### 📁 Networking
+
+> Exposing applications and routing traffic within or outside the cluster.
+
+* [📄 Readme.md](https://www.google.com/search?q=%23networking)
+* `svc-ClusterIP.yaml` — *Internal cluster routing, headless services, manual Endpoints*
+* `svc-NodePort.yaml` — *Exposing services on static node ports (30000-32767)*
+* `svc-LoadBalancer.yaml` — *Cloud-integrated load balancers (AWS NLB, Azure, GKE, MetalLB)*
+* `svc-ExternalName.yaml` — *DNS aliases and CNAME records pointing to external services*
 
 ---
 
-## 🛠️ Essential kubectl Cheat Sheet
+Are you building out a reference repository for your team, or are you looking to generate the actual starter YAML files for these folders?
+---
 
-### 🔍 Discovery & Infrastructure Checks
-```bash
-kubectl cluster-info                           # View active control plane location details
-kubectl get nodes -o wide                      # Fetch detailed state parameters of worker nodes
-kubectl top nodes                              # Monitor host resource strain (Requires Metrics-Server)
+## Learning Path
 
-```
+Start here if you're new to Kubernetes:
 
-### 🏎️ Declarative Manifest Management
+1. **Cluster Architecture** — understand what components exist and why
+2. **Installation** — get a local cluster (minikube or kind)
+3. **Workloads / Deployment** — deploy your first app
+4. **Networking / ClusterIP + NodePort** — expose it
+5. **Configuration / ConfigMaps + Secrets** — externalize config
+6. **Storage / Volumes + PVC** — add persistence
+7. **Workloads / StatefulSet** — run stateful apps (databases)
+8. **Configuration / Probes** — make health checks work
+9. **Configuration / Resources** — set requests and limits
+10. **Workloads / CronJob** — schedule batch work
+11. **Workloads / DaemonSet** — run cluster-wide agents
+12. **Networking / LoadBalancer** — expose to the internet
+13. **Workloads / Others** — HPA, PDB, security contexts
 
-```bash
-kubectl apply -f <filename>.yaml               # Create or modify resources declaratively
-kubectl apply -f <directory>/                  # Recursively parse and apply an entire directory
-kubectl delete -f <filename>.yaml              # Safely tear down resources
+---
 
-```
-
-### 🔬 Inspection & Application Debugging
-
-```bash
-kubectl get all -n default                     # Snapshot default running elements
-kubectl describe pod <pod-name>                # Deep-dive inspect a specific pod (Review "Events" for errors)
-kubectl logs <pod-name> [-c <container>] [-f]  # Stream container engine standard output logs
-kubectl exec -it <pod-name> -- bash            # Attach a local interactive shell to a running container
-
-```
-
-### 🔄 Deployment Orchestration
+## Common kubectl Commands
 
 ```bash
-kubectl rollout status deployment/<name>       # Follow rolling update migration steps live
-kubectl rollout history deployment/<name>      # Inspect the revision timeline tracking
-kubectl rollout undo deployment/<name>         # Rollback immediately to the previous deployment layer
-kubectl scale deployment <name> --replicas=5   # Re-dimension stateless pool footprints
+# Cluster
+kubectl cluster-info
+kubectl get nodes -o wide
+kubectl top nodes                   # requires metrics-server
 
-```
+# Apply / delete manifests
+kubectl apply -f <file>.yaml
+kubectl apply -f <directory>/
+kubectl delete -f <file>.yaml
 
-### 🔌 Port Forwarding (Local Development)
+# Inspect resources
+kubectl get all -n default
+kubectl describe pod <pod-name>
+kubectl logs <pod-name> [-c <container>] [-f]
+kubectl exec -it <pod-name> -- bash
 
-```bash
-kubectl port-forward svc/<service-name> 8080:80 # Map local ports to a specific Service definition
-kubectl port-forward pod/<pod-name> 8080:8080  # Direct bypass link into an isolated Pod
+# Deployments
+kubectl rollout status deployment/<name>
+kubectl rollout history deployment/<name>
+kubectl rollout undo deployment/<name>
 
-```
+# Scale
+kubectl scale deployment <name> --replicas=5
 
-### 🔑 Security & Configuration Utilities
+# Port forwarding (local development)
+kubectl port-forward svc/<service> 8080:80
+kubectl port-forward pod/<pod> 8080:8080
 
-```bash
+# Namespace
+kubectl get all -n <namespace>
+kubectl config set-context --current --namespace=<ns>
+
+# Secrets / ConfigMaps
 kubectl get secrets
 kubectl get configmaps
-# Extract and decode base64 fields natively out of secret files
 kubectl get secret <name> -o jsonpath='{.data.<key>}' | base64 -d
 
-```
+# Storage
+kubectl get pv,pvc
+kubectl get storageclass
 
-### 💾 Storage Auditing
-
-```bash
-kubectl get pv,pvc                             # Cross-reference resource allocations against actual requests
-kubectl get storageclass                       # Audit registered dynamic cloud storage factories
-
+# Troubleshooting
+kubectl describe pod <pod>          # events section is key
+kubectl get events --sort-by=.lastTimestamp
+kubectl top pods --containers
 ```
 
 ---
 
-## 🧠 Key Concepts Cheat Sheet
+## Key Concepts Cheat Sheet
 
-| Component | Operational Responsibility | Lifecycle State |
-| --- | --- | --- |
-| **Pod** | Smallest single deployment wrapper; schedules tight container collections | Volatile |
-| **Deployment** | Handles ReplicaSets; orchestrates automated, zero-downtime application updates | Stateless |
-| **StatefulSet** | Grants stable persistent storage bindings and persistent network identity markers | Stateful |
-| **DaemonSet** | Distributes specific singular operational instances onto every matching worker node | Infrastructure |
-| **Job / CronJob** | Drives transient, scheduled run-to-completion execution tracks | Short-Lived |
-| **Service** | Establishes fixed internal IP addressing schemes and load balancing configurations | Network Target |
-| **ConfigMap** | Keeps infrastructure settings detached from compiled codebase configurations | Configuration |
-| **Secret** | Isolates critical credential values securely using basic Base64 protections | Configuration |
-| **PersistentVolume** | Low-level storage allocations mapped straight onto real computing infrastructure | Storage Plane |
-| **PersistentVolumeClaim** | Individual application resource authorization requests for persistent disk layers | Storage Plane |
-| **StorageClass** | Dynamic factory parameters that auto-provision external backing disks on demand | Storage Plane |
-| **Namespace** | Creates logical sandboxes and tenant dividers inside a shared physical environment | Boundary |
+| Concept | What it does |
+|---|---|
+| Pod | Smallest deployable unit; one or more containers |
+| Deployment | Manages ReplicaSets; rolling updates; rollback |
+| StatefulSet | Pods with stable identity and persistent storage |
+| DaemonSet | One pod per node |
+| Job / CronJob | Run to completion; scheduled batch |
+| Service | Stable network endpoint + load balancing for pods |
+| ConfigMap | Externalise non-sensitive config |
+| Secret | Store sensitive data (base64-encoded) |
+| PersistentVolume | Cluster-level storage resource |
+| PersistentVolumeClaim | Request storage from a PV |
+| StorageClass | Recipe for dynamic PV provisioning |
+| Namespace | Logical isolation boundary inside a cluster |
+| RBAC | Role-Based Access Control (who can do what) |
+| NetworkPolicy | Firewall rules for pod traffic |
+| HPA | Auto-scale pods based on metrics |
+| Ingress | HTTP/S routing rules (host + path → service) |
 
 ---
 
-## 🔗 Useful Learning Resources
+## Useful Resources
 
-* 📖 [Kubernetes Official Docs](https://kubernetes.io/docs/) — *The absolute reference documentation guide.*
-* 🏎️ [kubectl Cheat Sheet Reference](https://kubernetes.io/docs/reference/kubectl/cheatsheet/) — *Quick command syntaxes.*
-* 🧪 [Killercoda K8s Scenarios](https://killercoda.com/kubernetes) — *Interactive, scriptable sandbox scenarios.*
-* 🛝 [Play with Kubernetes](https://labs.play-with-k8s.com/) — *A temporary multi-node workspace setup directly inside the browser.*
-
-```
-
-***
-
-What specific Kubernetes topic or concept are you planning to work on first within this repository?
-
-```
+- [Kubernetes Official Docs](https://kubernetes.io/docs/)
+- [kubectl Cheat Sheet](https://kubernetes.io/docs/reference/kubectl/cheatsheet/)
+- [Kubernetes API Reference](https://kubernetes.io/docs/reference/kubernetes-api/)
+- [Play with Kubernetes](https://labs.play-with-k8s.com/)
+- [Killercoda K8s Scenarios](https://killercoda.com/kubernetes)
