@@ -19,16 +19,16 @@ This directory covers all storage primitives in Kubernetes — from ephemeral po
 ## Storage Hierarchy
 
 ```
-StorageClass  ─► dynamic provisioning
+StorageClass                ─► dynamic provisioning
      │
      ▼
-PersistentVolume (PV)  ─► cluster-level storage resource
+PersistentVolume (PV)       ─► cluster-level storage resource
      │ bound
      ▼
 PersistentVolumeClaim (PVC)  ─► namespace-level storage request
      │ mounted by
      ▼
-Pod Volume  ─► per-pod ephemeral or persistent storage
+Pod Volume                   ─► per-pod ephemeral or persistent storage
 ```
 
 ---

@@ -4,10 +4,8 @@
 # Kubernetes has three types of health probes:
 #
 #   Liveness  – Is the container alive? If it fails, k8s restarts the container.
-#   Readiness – Is the container ready to serve traffic? If it fails, the pod is
-#               removed from Service endpoints (no traffic sent to it).
-#   Startup   – Is the container done starting up? Until it passes, liveness and
-#               readiness probes are disabled. Useful for slow-starting apps.
+#   Readiness – Is the container ready to serve traffic? If it fails, the pod is removed from Service endpoints (no traffic sent to it).
+#   Startup   – Is the container done starting up? Until it passes, liveness and readiness probes are disabled. Useful for slow-starting apps.
 #
 # Probe mechanisms:
 #   httpGet   – HTTP GET request; success if status code is 2xx/3xx
@@ -196,8 +194,7 @@ spec:
 ---
 # ------------------------------------------------------------
 # 4. gRPC probe (k8s 1.24+, GA in 1.27)
-#    App must implement the gRPC Health Checking Protocol:
-#    https://github.com/grpc/grpc/blob/master/doc/health-checking.md
+#    App must implement the gRPC Health Checking Protocol: https://github.com/grpc/grpc/blob/master/doc/health-checking.md
 # ------------------------------------------------------------
 apiVersion: v1
 kind: Pod
@@ -237,8 +234,7 @@ spec:
 
 ---
 # ------------------------------------------------------------
-# 5. Deployment demonstrating all three probe types together
-#    with a Spring Boot application pattern
+# 5. Deployment demonstrating all three probe types together with a Spring Boot application pattern
 # ------------------------------------------------------------
 apiVersion: apps/v1
 kind: Deployment

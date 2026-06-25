@@ -1,9 +1,7 @@
 # ============================================================
 # Kubernetes Volumes - Learning Reference
 # ============================================================
-# A Volume gives containers in a Pod access to storage.
-# Unlike a container's filesystem, volumes outlive container
-# restarts (within the same pod lifetime).
+# A Volume gives containers in a Pod access to storage. Unlike a container's filesystem, volumes outlive container restarts (within the same pod lifetime).
 #
 # Built-in volume types covered here:
 #   emptyDir      – temporary scratch space; deleted when pod dies
@@ -21,8 +19,7 @@
 
 # ------------------------------------------------------------
 # 1. emptyDir – ephemeral shared volume (deleted with pod)
-#    Useful for: caching, sharing files between containers,
-#    sidecar log shipping, init-container data passing.
+#    Useful for: caching, sharing files between containers, sidecar log shipping, init-container data passing.
 # ------------------------------------------------------------
 apiVersion: v1
 kind: Pod

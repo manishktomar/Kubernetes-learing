@@ -1,8 +1,7 @@
 # ============================================================
 # Kubernetes Persistent Volumes (PV) - Learning Reference
 # ============================================================
-# A PersistentVolume (PV) is a cluster-level storage resource
-# provisioned by an administrator (or dynamically by a StorageClass).
+# A PersistentVolume (PV) is a cluster-level storage resource provisioned by an administrator (or dynamically by a StorageClass).
 # It is independent of any single pod's lifecycle.
 #
 # PV lifecycle:

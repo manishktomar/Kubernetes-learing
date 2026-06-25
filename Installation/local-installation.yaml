@@ -60,50 +60,6 @@
 #   kind delete cluster --name dev
 # ============================================================
 
-# kind multi-node cluster config file
-# Save as kind-config.yaml and run: kind create cluster --config kind-config.yaml
-apiVersion: kind.x-k8s.io/v1alpha4
-kind: Cluster
-name: learning-cluster
-nodes:
-  # Control-plane node
-  - role: control-plane
-    image: kindest/node:v1.29.2
-    # Expose ports to host so Ingress works
-    extraPortMappings:
-      - containerPort: 80
-        hostPort: 80
-        protocol: TCP
-      - containerPort: 443
-        hostPort: 443
-        protocol: TCP
-    # Label the node
-    labels:
-      ingress-ready: "true"
-
-  # Worker nodes
-  - role: worker
-    image: kindest/node:v1.29.2
-    labels:
-      tier: frontend
-
-  - role: worker
-    image: kindest/node:v1.29.2
-    labels:
-      tier: backend
-
-  - role: worker
-    image: kindest/node:v1.29.2
-    labels:
-      tier: data
-
-# kind networking config
-networking:
-  apiServerAddress: "127.0.0.1"
-  apiServerPort: 6443
-  podSubnet: "10.244.0.0/16"
-  serviceSubnet: "10.96.0.0/16"
-  disableDefaultCNI: false          # use built-in kindnet CNI
 
 # ============================================================
 # kind useful commands after cluster creation

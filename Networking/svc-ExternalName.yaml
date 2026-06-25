@@ -1,9 +1,7 @@
 # ============================================================
 # Kubernetes Service: ExternalName - Learning Reference
 # ============================================================
-# ExternalName maps a Service to a DNS name (CNAME alias).
-# No proxying or load balancing happens; the DNS resolution
-# returns the external hostname directly to the client.
+# ExternalName maps a Service to a DNS name (CNAME alias).No proxying or load balancing happens; the DNS resolution returns the external hostname directly to the client.
 #
 # Traffic flow:
 #   Pod looks up <service-name>  →
@@ -12,8 +10,7 @@
 #
 # Use ExternalName for:
 #   - Abstracting external services behind a k8s DNS name
-#   - Migration: swap from external DB to in-cluster DB by changing
-#     the Service type without touching application configuration
+#   - Migration: swap from external DB to in-cluster DB by changing the Service type without touching application configuration
 #   - Multi-environment config (dev points to test DB, prod to prod DB)
 #
 # Limitations:

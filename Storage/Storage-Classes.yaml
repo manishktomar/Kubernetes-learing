@@ -1,19 +1,17 @@
 # ============================================================
 # Kubernetes StorageClasses - Learning Reference
 # ============================================================
-# A StorageClass defines "classes" of storage with specific
-# performance characteristics and provisioner backends.
-# When a PVC references a StorageClass, the provisioner
-# creates the underlying storage (EBS volume, Azure Disk, etc.)
+# A StorageClass defines "classes" of storage with specific performance characteristics and provisioner backends.
+# When a PVC references a StorageClass, the provisioner creates the underlying storage (EBS volume, Azure Disk, etc.)
 # automatically — this is called Dynamic Provisioning.
 #
 # Key fields:
-#   provisioner       – the plugin that creates the storage
-#   parameters        – provisioner-specific options
-#   reclaimPolicy     – Retain or Delete (default: Delete)
-#   volumeBindingMode – Immediate or WaitForFirstConsumer
-#   allowVolumeExpansion – whether PVCs can grow
-#   mountOptions      – extra options passed to mount
+#   provisioner           – the plugin that creates the storage
+#   parameters            – provisioner-specific options
+#   reclaimPolicy         – Retain or Delete (default: Delete)
+#   volumeBindingMode     – Immediate or WaitForFirstConsumer
+#   allowVolumeExpansion  – whether PVCs can grow
+#   mountOptions          – extra options passed to mount
 # ============================================================
 
 

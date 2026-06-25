@@ -1,0 +1,100 @@
+# Amazon EKS Complete Setup Guide
+
+## Step 1: Login to AWS Console
+
+## Step 2: Create IAM Role for EKS Control Plane
+    Navigate to: IAM → Roles → Create Role
+
+Details
+
+## Step 3: Create VPC (If Not Available)
+
+VPC
+subnet
+Internet Gateway
+Route Tables
+
+
+## Step 4: Create EKS Cluster
+
+Go to: EKS → Clusters → Create Cluster
+
+| Parameter          | Value                         |
+| ------------------ | ----------------------------- |
+| Name               | my-eks-cluster                |
+| Kubernetes Version | Latest Supported              |
+| Cluster IAM Role   | eks-cluster-role              |
+| VPC                | Select VPC                    |
+| Subnets            | Select Private/Public Subnets |
+| Security Group     | Existing or New               |
+
+
+Cluster creation takes approximately: 10-15 minutes
+
+## Step 5: Create Node Group
+
+After cluster becomes Active: Cluster → Compute → Add Node Group
+
+Create Node IAM Role : eks-node-role = HOW
+
+Attach:
+    AmazonEKSWorkerNodePolicy
+    AmazonEC2ContainerRegistryReadOnly
+    AmazonEKS_CNI_Policy
+
+Node Group Settings:
+
+| Parameter | Example   |
+| --------- | --------- |
+| Name      | worker-ng |
+| Instance  | m6a.large |
+| Min       | 1         |
+| Desired   | 2         |
+| Max       | 5         |
+
+
+
+## What Gets Automatically Created When EKS Is Created?
+
+### Control Plane Components (AWS Managed)
+
+AWS automatically manages:
+    Kubernetes API Server
+    etcd
+    Controller Manager
+    Scheduler
+
+You cannot SSH into these servers.
+
+
+## Elastic Network Interfaces (ENIs)
+AWS creates ENIs inside selected subnets for communication.
+
+
+
+
+Create compelete Readme.md Which include 
+
+Cluster 
+Certificate authority =  Auto Created  
+OpenID Connect provider URL = Auto Created or Manually and Purpose
+Cluster ARN = Auto Created or Manually and Purpose
+Subnet = Both Private
+Pod Identity associations = Auto Created or Manually and Purpose
+
+Addon 
+Tags
+
+Node 
+Node group ARN = Auto Created or Manually and Purpose
+Node IAM role ARN = Auto Created or Manually and Purpose
+Autoscaling group name = Auto Created or Manually and Purpose
+Configure remote access to nodes = Auto Created or Manually and Purpose
+Allow remote access from = Auto Created or Manually and Purpose
+Kubernetes labels = Auto Created or Manually and Purpose
+Kubernetes taints = Auto Created or Manually and Purpose
+Desired size |  Minimum size | Maximum size = Auto Created or Manually and Purpose
+
+
+
+

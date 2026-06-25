@@ -2,9 +2,7 @@
 # Kubernetes Service: ClusterIP - Learning Reference
 # ============================================================
 # ClusterIP is the DEFAULT service type.
-# It creates a virtual IP address accessible ONLY within the cluster.
-# It acts as a stable endpoint (DNS name + IP) in front of pods
-# which may come and go.
+# It creates a virtual IP address accessible ONLY within the cluster. It acts as a stable endpoint (DNS name + IP) in front of pods which may come and go.
 #
 # DNS format: <service-name>.<namespace>.svc.cluster.local
 # Short form:  <service-name>  (within the same namespace)
@@ -162,8 +160,7 @@ spec:
 ---
 # ------------------------------------------------------------
 # 5. ClusterIP without selector – manual Endpoints
-#    Use to create a service pointing to an external resource
-#    (on-prem DB, legacy system) under a k8s DNS name.
+#    Use to create a service pointing to an external resource (on-prem DB, legacy system) under a k8s DNS name.
 # ------------------------------------------------------------
 apiVersion: v1
 kind: Service

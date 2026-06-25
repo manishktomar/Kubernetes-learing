@@ -11,8 +11,7 @@
 #   - Optional: selector labels match
 #
 # Dynamic provisioning:
-#   If no matching PV exists and a StorageClass is specified,
-#   Kubernetes creates a new PV automatically via the provisioner.
+#   If no matching PV exists and a StorageClass is specified, Kubernetes creates a new PV automatically via the provisioner.
 # ============================================================
 
 
