@@ -4,54 +4,6 @@ A structured set of annotated YAML files for learning Kubernetes concepts, organ
 
 ---
 
-## Directory Structure
-
-```
-kubernetes/
-├── Cluster-Architecture.yaml   Control plane, node components, add-ons
-│
-├── Installation             How to get a cluster running
-│   ├── Readme.md
-│   ├── local-installation.yaml Minikube, kind, k3s, k3d
-│   ├── eks.yaml                AWS EKS (eksctl ClusterConfig)
-│   ├── aks.yaml                Azure AKS (az CLI + ARM reference)
-│   └── gks.yaml                Google GKE (gcloud CLI + Config Connector)
-│
-├── Workloads/                  Running containerised applications
-│   ├── Deployment.yaml         Rolling updates, Recreate, affinity, canary
-│   ├── StatefulSet.yaml        Stable identity, ordered scaling, MySQL/ZK
-│   ├── DaemonSet.yaml          One pod per node, log collector, GPU plugin
-│   ├── CronJob.yaml            Job, parallel Job, indexed Job, CronJob
-│   ├── Init-Containers.yaml    Pre-start tasks, dependency waiting
-│   ├── Sidecar-Containers.yaml Log shipper, proxy, config sync, native sidecar
-│   ├── Namespace.yaml          Isolation, ResourceQuota, LimitRange, NetworkPolicy
-│   └── Others.yaml             Pod, ReplicaSet, SecurityContext, HPA, PDB, PriorityClass
-│
-├── Configuration/              Externalizing app config and health
-│   ├── Readme.md
-│   ├── ConfigMaps.yaml         Non-sensitive config, env vars, volume mounts
-│   ├── Secrets.yaml            Sensitive data, TLS, Docker registry, SSH
-│   ├── Liveness,-Readiness-Startup-Probes.yaml  HTTP, exec, TCP, gRPC probes
-│   └── Resource-Management-for-Pods-Containers.yaml  requests/limits, QoS, LimitRange
-│
-├── Storage/                    Persistent and ephemeral storage
-│   ├── Readme.md
-│   ├── Volumes.yaml            emptyDir, hostPath, configMap, secret, downwardAPI
-│   ├── Persistent-Volumes.yaml PV definitions (hostPath, NFS, EBS, Azure, GCE)
-│   ├── PVC.yaml                PVC requests, snapshots, volume expansion
-│   └── Storage-Classes.yaml   Dynamic provisioning (gp3, Azure, GKE, NFS, local)
-│
-└── Networking/                 Services and cluster networking
-    ├── Readme.md
-    ├── svc-ClusterIP.yaml      Internal service, headless, manual Endpoints
-    ├── svc-NodePort.yaml       Expose on node ports 30000-32767
-    ├── svc-LoadBalancer.yaml   Cloud LB (AWS NLB, Azure, GKE, MetalLB)
-    └── svc-ExternalName.yaml   DNS alias / CNAME for external services
-```
-Here is your directory structure, transformed into a clean, interactive, and visually distinct layout. I have added anchor links so you can easily navigate between the folders and files.
-
----
-
 ## 📂 Kubernetes Repository Structure
 
 * [📄 Cluster-Architecture.yaml](https://www.google.com/search?q=%23cluster-architectureyaml) — *Control plane, node components, add-ons*
